@@ -15,12 +15,16 @@ docs/기획.md "원격 HTTP 서버 (M9)".
 - 헬스 체크 `GET /health`: 기동 준비(DB·항목 임베딩, 형태소 분석기)가 끝나면 200, 준비 중이거나
   실패했으면 503. Fly.io가 준비된 머신에만 요청을 보내는 데 쓴다. 플랫폼이 토큰 없이 부르므로
   인증·요청 제한에서 빼고, 응답에는 단계별 상태만 담는다.
+- 구조화 로그: 요청마다 JSON 한 줄(`http_request`: 경로·상태 코드·소요 시간)을 남기고, 같은 요청의
+  도구 호출 로그(`server.py`의 `tool_call`)와 `request_id`로 묶는다 (`sonbae.logs`).
 """
 
 import hmac
+import logging
 import math
 import os
 import time
+import uuid
 from collections.abc import Callable
 
 import uvicorn
@@ -29,7 +33,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from sonbae import server
+from sonbae import logs, server
 
 HOST_ENV = "SONBAE_HOST"
 PORT_ENV = "PORT"
@@ -46,6 +50,53 @@ HEALTH_PATH = "/health"
 # 검색당 약 $0.0015 × 분당 60회 = 시간당 약 $5.4로 묶인다
 DEFAULT_RATE_PER_MINUTE = 60
 DEFAULT_BURST = 20
+
+log = logging.getLogger(__name__)
+
+
+class RequestLog:
+    """HTTP 요청마다 경로·상태 코드·소요 시간을 JSON 로그로 남기는 ASGI 미들웨어. 가장 바깥에 둔다.
+
+    Fly.io 프록시가 붙이는 `Fly-Request-Id`가 있으면 요청 ID로 쓰고, 없으면 새로 만든다.
+    플랫폼이 몇 초마다 부르는 헬스 체크는 정상(200)이면 남기지 않는다.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        headers = dict(scope["headers"])
+        rid = headers.get(b"fly-request-id", b"").decode() or uuid.uuid4().hex[:16]
+        token = logs.request_id.set(rid)
+        status = 500  # 응답을 시작하기 전에 예외가 나면 uvicorn이 500으로 답한다
+        start = time.perf_counter()
+
+        async def send_with_status(message) -> None:
+            nonlocal status
+            if message["type"] == "http.response.start":
+                status = message["status"]
+            await send(message)
+
+        try:
+            await self.app(scope, receive, send_with_status)
+        finally:
+            if not (scope["path"] == HEALTH_PATH and status == 200):
+                log.info(
+                    "http_request",
+                    extra={
+                        "fields": {
+                            "event": "http_request",
+                            "method": scope["method"],
+                            "path": scope["path"],
+                            "status": status,
+                            "duration_ms": round((time.perf_counter() - start) * 1000, 1),
+                        }
+                    },
+                )
+            logs.request_id.reset(token)
 
 
 class TokenBucket:
@@ -152,19 +203,28 @@ def app() -> Starlette:
         json_response=True,
         host=host,
     )
-    # 나중에 더한 미들웨어가 바깥에 놓인다. 인증 → 요청 제한 → MCP 순서로 거쳐
-    # 틀린 토큰은 세지 않는다
+    # 나중에 더한 미들웨어가 바깥에 놓인다. 요청 로그 → 인증 → 요청 제한 → MCP 순서로 거쳐
+    # 틀린 토큰은 세지 않고, 401·429도 요청 로그에 남는다
     rate = float(os.environ.get(RATE_ENV, DEFAULT_RATE_PER_MINUTE)) / 60
     burst = int(os.environ.get(BURST_ENV, DEFAULT_BURST))
     starlette_app.add_middleware(RateLimit, bucket=TokenBucket(rate, burst))
     if token:
         starlette_app.add_middleware(TokenAuth, token=token)
+    starlette_app.add_middleware(RequestLog)
     return starlette_app
 
 
 def main() -> None:
     # 설정이 잘못됐으면 DB를 준비하기 전에 멈춘다
     starlette_app = app()
+    logs.configure()  # 기동 준비 실패 경고도 JSON으로 남게 먼저 설정한다
     # stdio 서버와 같이 DB·형태소 분석기 준비는 백그라운드에서 한다
     server._prepare()
-    uvicorn.run(starlette_app, host=_host(), port=int(os.environ.get(PORT_ENV, DEFAULT_PORT)))
+    # uvicorn 자체 로그 설정을 끄고 루트(JSON)로 모은다. 접근 로그는 RequestLog가 대신 남긴다
+    uvicorn.run(
+        starlette_app,
+        host=_host(),
+        port=int(os.environ.get(PORT_ENV, DEFAULT_PORT)),
+        log_config=None,
+        access_log=False,
+    )

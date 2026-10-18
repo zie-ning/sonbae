@@ -73,7 +73,7 @@ CI(`.github/workflows/ci.yml`)는 Python 3.11과 3.14에서 `uv sync --locked` �
 - **문서 확장**(`pipeline/expand.py`)은 추출과 별도 단계다. 항목을 재추출하거나 추가하면 `pipeline.expand`로 확장을, `pipeline.embed`로 항목 임베딩을 만든 뒤 색인을 빌드한다. 확장은 검색 보조 정보라 발췌 검증 대상이 아니고 카드·상세에 보여 주지 않는다.
 - **의미 검색 텍스트는 한 곳**(`sonbae.search.semantic.entry_text`)에서 만든다. 항목 임베딩(`pipeline.embed`), 서버 리랭커 입력, 검색 실험(`eval/search_embed.py`)이 같은 텍스트를 봐야 한다. 이 함수나 임베딩 모델(`semantic.EMBEDDING_MODEL`)을 바꾸면 `pipeline.embed`가 모든 항목을 다시 계산하고, 판정 기준선(`semantic.GATE`, `ITEM_MIN`)은 평가셋으로 다시 정한다(`eval/search_gate.py`).
 - **MCP SDK는 2.x**다. `FastMCP`가 아니라 `mcp.server.mcpserver.MCPServer`를 쓴다.
-- **원격 서버(`src/sonbae/remote.py`)는 `server.py`의 도구를 그대로 HTTP로 연다** (M9). 도구·prompt는 `server.py`에만 정의하고, 원격 쪽은 전송 방식(상태 없는 Streamable HTTP, JSON 응답)과 HTTP 계층만 다룬다.
+- **원격 서버(`src/sonbae/remote.py`)는 `server.py`의 도구를 그대로 HTTP로 연다** (M9). 도구·prompt는 `server.py`에만 정의하고, 원격 쪽은 전송 방식(상태 없는 Streamable HTTP, JSON 응답)과 HTTP 계층(토큰 인증, 요청 제한, `/health`, 요청 로그)만 다룬다. 원격 서버 로그는 JSON 한 줄(`sonbae.logs`)이고 검색어 원문은 남기지 않는다. stdio는 표준 출력이 MCP 통로라 로그를 표준 출력에 쓰면 안 된다.
 - **DB 경로 로딩은 `src/sonbae/db.py` 한 곳**에 둔다. 환경 변수 → 저장소 `data/techblog.sqlite` → GitHub Release 다운로드(사용자 캐시) 순으로 찾는다. 캐시 DB는 최신 Release를 따라간다: 서버가 하루 한 번 `releases/latest/download/db_release.json`을 확인해 스키마가 맞는 새 DB를 받아 두고 다음 기동부터 쓴다(`db.check_for_update`). 패키지의 `db_release.json`(태그·sha256)은 받아 둔 DB가 없고 최신 확인도 실패할 때 받는 고정 버전이며 `pipeline.release_db --upload`가 갱신한다(Release에 같은 파일도 올림). DB 스키마를 바꾸면 새 Release를 올려야 `test_shipped_manifest_matches_schema`가 통과한다. 서버는 도구 호출마다 연결을 열고 닫으며(`server._connection`), 연결을 스레드끼리 나눠 쓰지 않는다(이슈 #22). 쓰던 파일이 없어지면 경로를 다시 찾고, 새 버전을 받을 때 최근 3개 버전은 남긴다.
 
 ### MCP 도구 계약

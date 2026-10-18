@@ -1,6 +1,8 @@
 """원격 서버(Streamable HTTP) 테스트. 실제 uvicorn을 띄우고 MCP 클라이언트로 URL에 연결한다."""
 
 import asyncio
+import json
+import logging
 import socket
 import threading
 import time
@@ -12,6 +14,7 @@ import pytest
 import uvicorn
 from mcp import Client
 from mcp.client.streamable_http import streamable_http_client
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.shared._httpx_utils import create_mcp_http_client
 
 from sonbae import db, remote, server
@@ -95,7 +98,10 @@ def test_stateless_clients_run_concurrently(url):
 def test_host_and_port_from_env(monkeypatch):
     calls = {}
     monkeypatch.setattr(remote.server, "_prepare", lambda: [])
-    monkeypatch.setattr(remote.uvicorn, "run", lambda app, **kw: calls.update(kw))
+    monkeypatch.setattr(remote.logs, "configure", lambda: None)
+    monkeypatch.setattr(
+        remote.uvicorn, "run", lambda app, host, port, **kw: calls.update(host=host, port=port)
+    )
     remote.main()
     assert calls == {"host": remote.DEFAULT_HOST, "port": remote.DEFAULT_PORT}
 
@@ -254,6 +260,14 @@ def test_health_reports_failed_step_without_details(tmp_path, monkeypatch, url):
     assert str(tmp_path) not in response.text
 
 
+def test_ok_health_check_is_not_logged(url, json_lines):
+    # 플랫폼이 몇 초마다 부르므로 정상 응답은 로그에 남기지 않는다
+    for thread in server._prepare():
+        thread.join()
+    assert health(url).status_code == 200
+    assert events(json_lines, "http_request") == []
+
+
 def test_health_needs_no_token_and_is_not_rate_limited(monkeypatch):
     # 플랫폼이 토큰 없이 자주 부르므로 인증·요청 제한에서 뺀다
     monkeypatch.setenv(remote.TOKEN_ENV, TOKEN)
@@ -263,3 +277,94 @@ def test_health_needs_no_token_and_is_not_rate_limited(monkeypatch):
         assert {health(url).status_code for _ in range(5)} <= {200, 503}
         assert post(url).status_code == 401  # MCP 경로는 그대로 토큰이 필요하다
         assert [post(url, TOKEN).status_code for _ in range(2)] == [200, 429]
+
+
+# ---- 구조화 로그 ----
+
+
+@pytest.fixture
+def json_lines() -> Iterator[list[str]]:
+    # 원격 서버와 같은 JSON 형식으로, 로그를 남긴 스레드에서 바로 포맷한 줄을 모은다
+    lines: list[str] = []
+
+    class Collect(logging.Handler):
+        def emit(self, record):
+            lines.append(self.format(record))
+
+    handler = Collect()
+    handler.setFormatter(remote.logs.JsonFormatter())
+    root = logging.getLogger()
+    level = root.level
+    root.addHandler(handler)
+    root.setLevel(logging.INFO)
+    yield lines
+    root.removeHandler(handler)
+    root.setLevel(level)
+
+
+def events(lines: list[str], name: str) -> list[dict]:
+    return [d for d in map(json.loads, lines) if d.get("event") == name]
+
+
+def test_request_and_tool_logs_share_request_id(url, json_lines):
+    query = "선착순 쿠폰 비밀 설계"
+
+    async def run():
+        async with Client(url) as client:
+            await client.call_tool("search", {"query": query, "technologies": ["redis"]})
+
+    asyncio.run(run())
+    [tool] = events(json_lines, "tool_call")
+    requests = events(json_lines, "http_request")
+    assert tool["tool"] == "search"
+    assert tool["ok"] is True
+    assert tool["mode"] == "lexical"  # 테스트는 Voyage 키가 없어 단어 일치 검색으로 대체된다
+    assert tool["fallback"]
+    assert tool["results"] >= 0
+    assert tool["technologies"] == ["Redis"]  # 정규화한 기술명을 남긴다
+    assert tool["query_chars"] == len(query)
+    assert all(query not in line for line in json_lines)  # 검색어 원문은 남기지 않는다
+    # 도구는 작업 스레드에서 돌지만 같은 요청 ID로 묶인다
+    assert tool["request_id"] in {r["request_id"] for r in requests}
+    assert {r["status"] for r in requests} == {200}
+    assert all(r["path"] == remote.MCP_PATH and r["duration_ms"] >= 0 for r in requests)
+
+
+def test_rejected_requests_are_logged_and_fly_request_id_is_used(monkeypatch, json_lines):
+    monkeypatch.setenv(remote.TOKEN_ENV, TOKEN)
+    with serving() as url:
+        httpx.post(url, json=INITIALIZE, headers={"Fly-Request-Id": "fly-123"})
+        health(url)
+    logged = events(json_lines, "http_request")
+    [rejected] = [r for r in logged if r["path"] == remote.MCP_PATH]
+    assert rejected["status"] == 401
+    assert rejected["request_id"] == "fly-123"
+
+
+def test_failed_tool_call_is_logged(json_lines, monkeypatch, tmp_path):
+    monkeypatch.setenv(db.DB_PATH_ENV, str(tmp_path / "none.sqlite"))
+    server._database_path.cache_clear()
+    with pytest.raises(ToolError):
+        asyncio.run(server.server.call_tool("get_details", {"ids": ["case_0001"]}))
+    [tool] = events(json_lines, "tool_call")
+    assert tool == tool | {"tool": "get_details", "ok": False, "error": "ToolError"}
+
+
+def test_configure_writes_json_lines(capsys):
+    root = logging.getLogger()
+    saved = root.handlers[:], root.level
+    try:
+        remote.logs.configure()
+        token = remote.logs.request_id.set("abc")
+        logging.getLogger("sonbae.test").info("hello", extra={"fields": {"event": "x", "n": 1}})
+        logging.getLogger("httpx").info(
+            "POST https://api.voyageai.com"
+        )  # 경고 미만은 남기지 않는다
+        remote.logs.request_id.reset(token)
+    finally:
+        root.handlers[:], _ = saved
+        root.setLevel(saved[1])
+        logging.getLogger("httpx").setLevel(logging.NOTSET)
+    [line] = capsys.readouterr().out.splitlines()
+    data = json.loads(line)
+    assert data == data | {"level": "info", "message": "hello", "request_id": "abc", "n": 1}
