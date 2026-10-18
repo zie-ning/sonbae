@@ -39,7 +39,8 @@ ITEM_MIN = 0.50
 # 검색으로 대체한다. 정상 응답은 합쳐 1~2초인데, 호출 하나가 33초 걸린 적이 있다(M10 R5).
 # httpx의 timeout은 연결·읽기 단계별 한도라 합계를 막지 못해 전체 한도를 따로 둔다
 DEADLINE = 8.0
-TIMEOUT = DEADLINE  # 호출 하나의 httpx 단계별 한도. 한도를 넘겨 버린 호출도 이 안에 끝난다
+# 호출 하나의 httpx 단계별 한도. 실행 중에 버린 호출은 멈출 수 없어 단계마다 이만큼 더 갈 수 있다
+TIMEOUT = DEADLINE
 SLOW_CALL = 2.0  # 초. 이보다 오래 걸린 호출은 단계와 시간을 경고 로그로 남긴다
 
 log = logging.getLogger(__name__)
@@ -210,6 +211,9 @@ def _within(step: str, call: Callable[[], T], deadline: float) -> T:
     try:
         result = future.result(timeout=max(0.0, deadline - start))
     except FutureTimeout as e:
+        # 일꾼을 아직 못 받은 호출은 대기열에서 뺀다. 남겨 두면 끝난 검색을 위해 나중에 실행돼
+        # 뒤이은 검색을 밀어낸다(이슈 #25). 이미 실행 중인 호출은 취소되지 않는다
+        future.cancel()
         log.warning("Voyage %s 호출이 검색 한도 %.0f초를 넘겨 대체했다", step, DEADLINE)
         raise SemanticUnavailable(f"Voyage API 응답이 {DEADLINE:g}초 안에 오지 않았습니다") from e
     elapsed = time.monotonic() - start

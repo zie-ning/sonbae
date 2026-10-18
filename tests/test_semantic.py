@@ -1,7 +1,9 @@
 """의미 검색(M10) 테스트: 가짜 임베딩·리랭커 클라이언트로 2단 판정, 필터, 대체 경로를 본다."""
 
 import logging
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 import numpy as np
@@ -217,6 +219,20 @@ def test_falls_back_when_api_exceeds_search_deadline(vconn, monkeypatch):
     assert not result.semantic
     assert result.fallback == "Voyage API 응답이 0.2초 안에 오지 않았습니다"
     assert ids(result)[0] == "case_0001"
+
+
+def test_abandoned_queued_call_is_cancelled(monkeypatch):
+    # 일꾼을 못 받은 채 버린 호출은 나중에도 실행되지 않는다(이슈 #25)
+    pool = ThreadPoolExecutor(max_workers=1)
+    monkeypatch.setattr(semantic, "_executor", pool)
+    release = threading.Event()
+    pool.submit(release.wait)  # 하나뿐인 일꾼을 막아 둔다
+    ran = []
+    with pytest.raises(semantic.SemanticUnavailable):
+        semantic._within("임베딩", lambda: ran.append(True), time.monotonic() + 0.05)
+    release.set()
+    pool.shutdown(wait=True)
+    assert ran == []
 
 
 def test_slow_call_is_logged(vconn, monkeypatch, caplog):
