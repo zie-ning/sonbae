@@ -5,10 +5,14 @@ import socket
 import threading
 import time
 from collections.abc import Iterator
+from contextlib import contextmanager
 
+import httpx
 import pytest
 import uvicorn
 from mcp import Client
+from mcp.client.streamable_http import streamable_http_client
+from mcp.shared._httpx_utils import create_mcp_http_client
 
 from sonbae import db, remote, server
 
@@ -16,6 +20,9 @@ from sonbae import db, remote, server
 @pytest.fixture(autouse=True)
 def use_sample_db(sample_db, monkeypatch):
     monkeypatch.setenv(db.DB_PATH_ENV, str(sample_db))
+    # 개발 PC에 설정된 값이 테스트에 섞이지 않게 한다
+    for name in (remote.HOST_ENV, remote.PORT_ENV, remote.TOKEN_ENV):
+        monkeypatch.delenv(name, raising=False)
     server._database_path.cache_clear()
     yield
     server._database_path.cache_clear()
@@ -27,8 +34,8 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
-@pytest.fixture
-def url() -> Iterator[str]:
+@contextmanager
+def serving() -> Iterator[str]:
     port = free_port()
     http = uvicorn.Server(
         uvicorn.Config(remote.app(), host="127.0.0.1", port=port, log_level="warning")
@@ -42,6 +49,12 @@ def url() -> Iterator[str]:
     yield f"http://127.0.0.1:{port}{remote.MCP_PATH}"
     http.should_exit = True
     thread.join(timeout=10)
+
+
+@pytest.fixture
+def url() -> Iterator[str]:
+    with serving() as u:
+        yield u
 
 
 def test_tools_over_http(url):
@@ -86,5 +99,61 @@ def test_host_and_port_from_env(monkeypatch):
 
     monkeypatch.setenv(remote.HOST_ENV, "0.0.0.0")
     monkeypatch.setenv(remote.PORT_ENV, "8080")
+    monkeypatch.setenv(remote.TOKEN_ENV, "secret")
     remote.main()
     assert calls == {"host": "0.0.0.0", "port": 8080}
+
+
+# ---- 토큰 인증 ----
+
+TOKEN = "test-token"
+INITIALIZE = {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+        "protocolVersion": "2025-06-18",
+        "capabilities": {},
+        "clientInfo": {"name": "test", "version": "0"},
+    },
+}
+
+
+@pytest.fixture
+def secured_url(monkeypatch) -> Iterator[str]:
+    monkeypatch.setenv(remote.TOKEN_ENV, TOKEN)
+    with serving() as u:
+        yield u
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [{}, {"Authorization": "Bearer wrong"}, {"Authorization": TOKEN}, {"Authorization": "Basic x"}],
+    ids=["none", "wrong", "no-scheme", "basic"],
+)
+def test_rejects_missing_or_wrong_token(secured_url, headers):
+    headers = {"Accept": "application/json, text/event-stream", **headers}
+    response = httpx.post(secured_url, json=INITIALIZE, headers=headers)
+    assert response.status_code == 401
+    assert response.headers["www-authenticate"] == "Bearer"
+
+
+def test_accepts_correct_token(secured_url):
+    async def run():
+        http = create_mcp_http_client(headers={"Authorization": f"Bearer {TOKEN}"})
+        async with Client(streamable_http_client(secured_url, http_client=http)) as client:
+            return await client.call_tool("search", {"query": "선착순 쿠폰"})
+
+    result = asyncio.run(run())
+    assert not result.is_error
+    assert "선착순" in result.content[0].text
+
+
+def test_refuses_public_host_without_token(monkeypatch):
+    # 토큰 없이 외부에 열면 누구나 서버의 Voyage 키를 쓸 수 있어 기동하지 않는다
+    prepared = []
+    monkeypatch.setattr(remote.server, "_prepare", lambda: prepared.append(True))
+    monkeypatch.setenv(remote.HOST_ENV, "0.0.0.0")
+    with pytest.raises(SystemExit, match=remote.TOKEN_ENV):
+        remote.main()
+    assert not prepared

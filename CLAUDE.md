@@ -34,7 +34,7 @@ uv run python -m pipeline.update [--dry-run]                                   #
 uv run python -m pipeline.release_db [--upload]                                # 검색 DB를 GitHub Release로 배포 (gh 로그인 필요)
 uv run python -m pipeline.view                                                 # jsonl을 보기 좋은 json으로 변환 (data/.view/, git 제외)
 uv run sonbae                                                                  # MCP 서버 (stdio)
-uv run sonbae-http                                                             # 원격 MCP 서버 (Streamable HTTP, M9). SONBAE_HOST·PORT로 주소 지정
+uv run sonbae-http                                                             # 원격 MCP 서버 (Streamable HTTP, M9). SONBAE_HOST·PORT로 주소, SONBAE_TOKEN으로 인증
 ```
 
 파이프라인 의존성은 `pipeline` 의존성 그룹에 있고 `[tool.uv] default-groups`로 기본 설치된다.
