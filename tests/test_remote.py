@@ -216,3 +216,50 @@ def test_wrong_token_is_not_counted(monkeypatch):
     with serving() as url:
         assert {post(url, "wrong").status_code for _ in range(5)} == {401}
         assert [post(url, TOKEN).status_code for _ in range(3)] == [200, 200, 429]
+
+
+# ---- 헬스 체크 ----
+
+
+def health(url: str) -> httpx.Response:
+    return httpx.get(url.removesuffix(remote.MCP_PATH) + remote.HEALTH_PATH)
+
+
+def test_health_is_starting_until_prepared(url):
+    server.readiness.reset()
+    response = health(url)
+    assert response.status_code == 503
+    assert response.json() == {
+        "status": "starting",
+        "steps": {"db": "starting", "analyzer": "starting"},
+    }
+
+    for thread in server._prepare():
+        thread.join()
+    response = health(url)
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "steps": {"db": "ok", "analyzer": "ok"}}
+
+
+def test_health_reports_failed_step_without_details(tmp_path, monkeypatch, url):
+    # 실패 이유(경로 등)는 로그에만 남기고 응답에는 상태만 담는다
+    missing = tmp_path / "none.sqlite"
+    monkeypatch.setenv(db.DB_PATH_ENV, str(missing))
+    server._database_path.cache_clear()
+    for thread in server._prepare():
+        thread.join()
+    response = health(url)
+    assert response.status_code == 503
+    assert response.json() == {"status": "error", "steps": {"db": "error", "analyzer": "ok"}}
+    assert str(tmp_path) not in response.text
+
+
+def test_health_needs_no_token_and_is_not_rate_limited(monkeypatch):
+    # 플랫폼이 토큰 없이 자주 부르므로 인증·요청 제한에서 뺀다
+    monkeypatch.setenv(remote.TOKEN_ENV, TOKEN)
+    monkeypatch.setenv(remote.BURST_ENV, "1")
+    monkeypatch.setenv(remote.RATE_ENV, "1")
+    with serving() as url:
+        assert {health(url).status_code for _ in range(5)} <= {200, 503}
+        assert post(url).status_code == 401  # MCP 경로는 그대로 토큰이 필요하다
+        assert [post(url, TOKEN).status_code for _ in range(2)] == [200, 429]

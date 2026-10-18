@@ -12,6 +12,9 @@ docs/기획.md "원격 HTTP 서버 (M9)".
 - 요청 제한: 인증을 통과한 MCP 요청을 토큰 버킷으로 세어(기본 분당 60회, 몰림 20회) 넘으면 429로
   거절한다. 토큰이 새거나 에이전트가 검색을 반복해도 Voyage 비용이 한없이 늘지 않게 하는
   안전장치다. 토큰 하나·서버 한 대라 카운터는 프로세스 메모리에 하나만 둔다.
+- 헬스 체크 `GET /health`: 기동 준비(DB·항목 임베딩, 형태소 분석기)가 끝나면 200, 준비 중이거나
+  실패했으면 503. Fly.io가 준비된 머신에만 요청을 보내는 데 쓴다. 플랫폼이 토큰 없이 부르므로
+  인증·요청 제한에서 빼고, 응답에는 단계별 상태만 담는다.
 """
 
 import hmac
@@ -22,6 +25,7 @@ from collections.abc import Callable
 
 import uvicorn
 from starlette.applications import Starlette
+from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -37,6 +41,7 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
 LOCAL_HOSTS = ("127.0.0.1", "localhost", "::1")
 MCP_PATH = "/mcp"
+HEALTH_PATH = "/health"
 # 에이전트 한 명의 검색(한 번에 2~5개, 분당 수십 회 이하)은 넉넉히 통과하고, 최악의 Voyage 비용은
 # 검색당 약 $0.0015 × 분당 60회 = 시간당 약 $5.4로 묶인다
 DEFAULT_RATE_PER_MINUTE = 60
@@ -106,7 +111,7 @@ class TokenAuth:
         self.expected = f"Bearer {token}".encode()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] == "http" and not self._authorized(scope):
+        if scope["type"] == "http" and scope["path"] != HEALTH_PATH and not self._authorized(scope):
             response = JSONResponse(
                 {"error": "unauthorized", "message": "Authorization: Bearer 토큰이 필요합니다."},
                 status_code=401,
@@ -120,6 +125,14 @@ class TokenAuth:
         header = dict(scope["headers"]).get(b"authorization", b"")
         # 비교 시간으로 토큰을 한 글자씩 알아내지 못하게 상수 시간 비교를 쓴다
         return hmac.compare_digest(header, self.expected)
+
+
+@server.server.custom_route(HEALTH_PATH, methods=["GET"])
+async def health(request: Request) -> JSONResponse:
+    status, steps = server.readiness.status()
+    return JSONResponse(
+        {"status": status, "steps": steps}, status_code=200 if status == "ok" else 503
+    )
 
 
 def _host() -> str:
