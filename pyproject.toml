@@ -15,10 +15,12 @@ dependencies = [
     "kiwipiepy",
     "mcp",
     "numpy",  # 항목 임베딩 코사인 계산
+    "uvicorn",  # 원격 서버(M9) HTTP 실행. mcp도 의존하지만 직접 쓰므로 명시
 ]
 
 [project.scripts]
 sonbae = "sonbae.server:main"
+sonbae-http = "sonbae.remote:main"
 
 [dependency-groups]
 dev = [
