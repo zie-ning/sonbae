@@ -32,16 +32,16 @@ class FakeClient:
         self.query_vector = np.asarray(query_vector, dtype=np.float32)
         self.reranked: list[list[str]] = []
 
-    def embed_query(self, text: str) -> np.ndarray:
+    def embed_query(self, text: str, timeout: float | None = None) -> np.ndarray:
         return semantic.normalize(self.query_vector)
 
-    def rerank(self, query: str, documents: list[str]) -> list[float]:
+    def rerank(self, query: str, documents: list[str], timeout: float | None = None) -> list[float]:
         self.reranked.append(documents)
         return [next((v for k, v in self.scores.items() if k in doc), 0.1) for doc in documents]
 
 
 class BrokenClient(FakeClient):
-    def rerank(self, query: str, documents: list[str]) -> list[float]:
+    def rerank(self, query: str, documents: list[str], timeout: float | None = None) -> list[float]:
         raise semantic.SemanticUnavailable("Voyage API가 오류를 돌려줬습니다(HTTP 500)")
 
 
@@ -188,6 +188,26 @@ def test_voyage_client_parses_responses():
     assert all(r.headers["Authorization"] == "Bearer key" for r in requests)
 
 
+def test_voyage_client_passes_call_timeout():
+    # 검색이 넘긴 한도는 이번 요청에만 쓰고, 주지 않으면 클라이언트 기본값을 쓴다
+    timeouts: list[float] = []
+
+    def handler(request):
+        timeouts.append(request.extensions["timeout"]["read"])
+        return httpx.Response(200, json={"data": [{"index": 0, "relevance_score": 0.5}]})
+
+    client = mock_client(handler)
+    client.rerank("쿠폰", ["a"], timeout=1.5)
+    client.rerank("쿠폰", ["a"])
+    assert timeouts == [1.5, semantic.TIMEOUT]
+
+
+def test_call_gets_time_left_in_search():
+    seen: list[float] = []
+    semantic._within("임베딩", seen.append, time.monotonic() + 2.0)
+    assert 1.5 < seen[0] <= 2.0
+
+
 def test_client_from_env_reuses_one_client_per_key(monkeypatch):
     # 검색마다 클라이언트를 새로 만들면 SSL 설정에 호출당 약 0.4초가 든다(이슈 #19)
     monkeypatch.setattr(semantic, "_clients", {})
@@ -205,9 +225,9 @@ class SlowClient(FakeClient):
         super().__init__(scores)
         self.delay = delay
 
-    def rerank(self, query: str, documents: list[str]) -> list[float]:
+    def rerank(self, query: str, documents: list[str], timeout: float | None = None) -> list[float]:
         time.sleep(self.delay)
-        return super().rerank(query, documents)
+        return super().rerank(query, documents, timeout)
 
 
 def test_falls_back_when_api_exceeds_search_deadline(vconn, monkeypatch):
@@ -229,7 +249,7 @@ def test_abandoned_queued_call_is_cancelled(monkeypatch):
     pool.submit(release.wait)  # 하나뿐인 일꾼을 막아 둔다
     ran = []
     with pytest.raises(semantic.SemanticUnavailable):
-        semantic._within("임베딩", lambda: ran.append(True), time.monotonic() + 0.05)
+        semantic._within("임베딩", lambda t: ran.append(True), time.monotonic() + 0.05)
     release.set()
     pool.shutdown(wait=True)
     assert ran == []

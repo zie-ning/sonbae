@@ -39,7 +39,7 @@ ITEM_MIN = 0.50
 # 검색으로 대체한다. 정상 응답은 합쳐 1~2초인데, 호출 하나가 33초 걸린 적이 있다(M10 R5).
 # httpx의 timeout은 연결·읽기 단계별 한도라 합계를 막지 못해 전체 한도를 따로 둔다
 DEADLINE = 8.0
-# 호출 하나의 httpx 단계별 한도. 실행 중에 버린 호출은 멈출 수 없어 단계마다 이만큼 더 갈 수 있다
+# 호출 하나의 httpx 단계별 한도 기본값. 검색은 호출마다 남은 시간을 한도로 넘긴다(_within)
 TIMEOUT = DEADLINE
 SLOW_CALL = 2.0  # 초. 이보다 오래 걸린 호출은 단계와 시간을 경고 로그로 남긴다
 
@@ -54,8 +54,12 @@ class SemanticUnavailable(Exception):
 
 
 class Client(Protocol):
-    def embed_query(self, text: str) -> np.ndarray: ...
-    def rerank(self, query: str, documents: list[str]) -> list[float]: ...
+    """timeout: 이번 호출의 httpx 단계별 한도(초). None이면 클라이언트 기본값."""
+
+    def embed_query(self, text: str, timeout: float | None = None) -> np.ndarray: ...
+    def rerank(
+        self, query: str, documents: list[str], timeout: float | None = None
+    ) -> list[float]: ...
 
 
 def entry_text(entry: dict) -> str:
@@ -106,9 +110,11 @@ class VoyageClient:
             transport=transport,
         )
 
-    def _post(self, path: str, body: dict) -> dict:
+    def _post(self, path: str, body: dict, timeout: float | None = None) -> dict:
+        # httpx에서 timeout=None은 한도 없음이라, 주지 않았으면 클라이언트 기본값을 쓴다
+        limit = httpx.USE_CLIENT_DEFAULT if timeout is None else timeout
         try:
-            response = self._http.post(path, json=body)
+            response = self._http.post(path, json=body, timeout=limit)
         except httpx.HTTPError as e:
             reason = f"Voyage API에 연결하지 못했습니다({type(e).__name__})"
             raise SemanticUnavailable(reason) from e
@@ -117,19 +123,22 @@ class VoyageClient:
             raise SemanticUnavailable(reason)
         return response.json()
 
-    def embed(self, texts: list[str], input_type: str) -> np.ndarray:
+    def embed(self, texts: list[str], input_type: str, timeout: float | None = None) -> np.ndarray:
         """input_type: 검색어는 query, 항목은 document. 길이 1로 맞춘 float32 벡터."""
         data = self._post(
-            "embeddings", {"model": EMBEDDING_MODEL, "input": texts, "input_type": input_type}
+            "embeddings",
+            {"model": EMBEDDING_MODEL, "input": texts, "input_type": input_type},
+            timeout,
         )
         rows = sorted(data["data"], key=lambda d: d["index"])
         return normalize(np.asarray([r["embedding"] for r in rows], dtype=np.float32))
 
-    def embed_query(self, text: str) -> np.ndarray:
-        return self.embed([text], "query")[0]
+    def embed_query(self, text: str, timeout: float | None = None) -> np.ndarray:
+        return self.embed([text], "query", timeout)[0]
 
-    def rerank(self, query: str, documents: list[str]) -> list[float]:
-        data = self._post("rerank", {"model": RERANK_MODEL, "query": query, "documents": documents})
+    def rerank(self, query: str, documents: list[str], timeout: float | None = None) -> list[float]:
+        body = {"model": RERANK_MODEL, "query": query, "documents": documents}
+        data = self._post("rerank", body, timeout)
         scores = [0.0] * len(documents)
         for r in data["data"]:
             scores[r["index"]] = r["relevance_score"]
@@ -201,13 +210,23 @@ class Ranked:
     top_score: float  # 1위 리랭커 점수 (결과 없음 판정 근거)
 
 
-def _within(step: str, call: Callable[[], T], deadline: float) -> T:
+def _within(step: str, call: Callable[[float], T], deadline: float) -> T:
     """API 호출을 남은 시간 안에서만 기다린다. 넘으면 결과를 버리고 대체 경로로 보낸다.
 
-    DB 조회는 호출한 스레드에 남기고 API 호출만 일꾼 스레드에서 돌린다.
+    DB 조회는 호출한 스레드에 남기고 API 호출만 일꾼 스레드에서 돌린다. call은 httpx 한도로
+    쓸 남은 시간(초)을 받는다.
     """
+
+    def run() -> T:
+        # 실행 중인 호출은 취소할 수 없어, 검색이 포기할 즈음 httpx도 끝나도록 남은 시간을 한도로
+        # 준다(이슈 #25). 줄 선 시간을 빼야 하므로 일꾼에서 시작할 때 잰다
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise SemanticUnavailable("검색 한도가 지나 호출하지 않았습니다")
+        return call(remaining)
+
     start = time.monotonic()
-    future = _executor.submit(call)
+    future = _executor.submit(run)
     try:
         result = future.result(timeout=max(0.0, deadline - start))
     except FutureTimeout as e:
@@ -232,7 +251,7 @@ def rank(
 ) -> Ranked:
     """lexical: 필터를 건 BM25 상위 rowid. allowed: 필터에 맞는 rowid (필터가 없으면 None)."""
     deadline = time.monotonic() + DEADLINE
-    scores = vectors.matrix @ _within("임베딩", lambda: client.embed_query(query), deadline)
+    scores = vectors.matrix @ _within("임베딩", lambda t: client.embed_query(query, t), deadline)
     order = np.argsort(-scores, kind="stable")
     semantic = []
     for n in order:
@@ -245,7 +264,7 @@ def rank(
     if not candidates:
         return Ranked([], 0.0)
     documents = texts_of(candidates)
-    relevance = _within("리랭커", lambda: client.rerank(query, documents), deadline)
+    relevance = _within("리랭커", lambda t: client.rerank(query, documents, t), deadline)
     ranked = sorted(zip(candidates, relevance, strict=True), key=lambda p: -p[1])
     top = ranked[0][1]
     if top < GATE:
