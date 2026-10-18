@@ -288,11 +288,51 @@ def test_breaker_blocks_other_searches_while_probing(monkeypatch):
     monkeypatch.setattr(semantic, "BREAKER_FAILURES", 1)
     monkeypatch.setattr(semantic, "BREAKER_COOLDOWN", 0.0)
     breaker = semantic._Breaker()
-    breaker.failed()
-    assert breaker.allow()  # 시험 하나
-    assert not breaker.allow()  # 시험이 끝나기 전 다른 검색
-    breaker.succeeded()
-    assert breaker.allow()
+    breaker.failed(breaker.allow())
+    probe = breaker.allow()  # 시험 하나
+    assert probe is not None
+    assert breaker.allow() is None  # 시험이 끝나기 전 다른 검색
+    breaker.succeeded(probe)
+    assert breaker.allow() is not None
+
+
+def test_breaker_ignores_late_results_from_before_it_opened(monkeypatch):
+    # 막기 전에 들어온 검색이 늦게 성공해도 차단을 풀지 않고, 늦게 실패해도 시험을 끊지 않는다
+    monkeypatch.setattr(semantic, "BREAKER_FAILURES", 2)
+    monkeypatch.setattr(semantic, "BREAKER_COOLDOWN", 0.0)
+    breaker = semantic._Breaker()
+    early = [breaker.allow() for _ in range(4)]
+    breaker.failed(early[0])
+    breaker.failed(early[1])
+    probe = breaker.allow()
+    breaker.succeeded(early[2])
+    breaker.failed(early[3])
+    assert breaker.allow() is None  # 시험은 아직 진행 중
+    breaker.succeeded(probe)
+    assert breaker.allow() is not None
+
+
+def test_unexpected_error_still_ends_probe(vconn, monkeypatch):
+    monkeypatch.setattr(semantic, "BREAKER_FAILURES", 1)
+    monkeypatch.setattr(semantic, "BREAKER_COOLDOWN", 0.0)
+
+    class Crashing(FakeClient):
+        def rerank(self, query, documents, timeout=None):
+            raise RuntimeError("예상 밖 오류")
+
+    for _ in range(2):  # 차단 뒤 시험이 예외로 끝나도 다음 시험을 막지 않는다
+        with pytest.raises(RuntimeError):
+            q.search(vconn, "쿠폰", q.Filters(), Crashing({}))
+    assert q.search(vconn, "쿠폰", q.Filters(), FakeClient({"원자 연산": 0.9})).semantic
+
+
+def test_malformed_response_becomes_unavailable():
+    client = mock_client(lambda request: httpx.Response(200, text="not json"))
+    with pytest.raises(semantic.SemanticUnavailable, match="해석하지 못했습니다"):
+        client.embed_query("쿠폰")
+    client = mock_client(lambda request: httpx.Response(200, json={"oops": []}))
+    with pytest.raises(semantic.SemanticUnavailable, match="해석하지 못했습니다"):
+        client.rerank("쿠폰", ["a"])
 
 
 def test_slow_call_is_logged(vconn, monkeypatch, caplog):
