@@ -255,6 +255,46 @@ def test_abandoned_queued_call_is_cancelled(monkeypatch):
     assert ran == []
 
 
+def test_breaker_skips_api_after_repeated_failures(vconn, monkeypatch):
+    # 연속 실패 뒤에는 Voyage를 부르지 않고 바로 단어 일치 검색으로 간다(이슈 #25)
+    monkeypatch.setattr(semantic, "BREAKER_FAILURES", 2)
+    broken = BrokenClient({})
+    for _ in range(2):
+        assert q.search(vconn, "쿠폰", q.Filters(), broken).fallback.endswith("(HTTP 500)")
+    healthy = FakeClient({"원자 연산": 0.9})
+    result = q.search(vconn, "쿠폰", q.Filters(), healthy)
+    assert not result.semantic
+    assert result.fallback == "Voyage API 호출이 잇달아 실패해 잠시 쓰지 않습니다"
+    assert healthy.reranked == []
+
+
+def test_breaker_probes_once_after_cooldown(vconn, monkeypatch):
+    monkeypatch.setattr(semantic, "BREAKER_FAILURES", 1)
+    monkeypatch.setattr(semantic, "BREAKER_COOLDOWN", 0.05)
+    q.search(vconn, "쿠폰", q.Filters(), BrokenClient({}))
+    time.sleep(0.06)
+    # 차단 시간이 지나면 한 번 시험하고, 실패하면 다시 막는다
+    assert q.search(vconn, "쿠폰", q.Filters(), BrokenClient({})).fallback.endswith("(HTTP 500)")
+    assert q.search(vconn, "쿠폰", q.Filters(), FakeClient({})).fallback.startswith(
+        "Voyage API 호출이"
+    )
+    time.sleep(0.06)
+    # 시험이 성공하면 풀린다
+    assert q.search(vconn, "쿠폰", q.Filters(), FakeClient({"원자 연산": 0.9})).semantic
+    assert q.search(vconn, "쿠폰", q.Filters(), FakeClient({"원자 연산": 0.9})).semantic
+
+
+def test_breaker_blocks_other_searches_while_probing(monkeypatch):
+    monkeypatch.setattr(semantic, "BREAKER_FAILURES", 1)
+    monkeypatch.setattr(semantic, "BREAKER_COOLDOWN", 0.0)
+    breaker = semantic._Breaker()
+    breaker.failed()
+    assert breaker.allow()  # 시험 하나
+    assert not breaker.allow()  # 시험이 끝나기 전 다른 검색
+    breaker.succeeded()
+    assert breaker.allow()
+
+
 def test_slow_call_is_logged(vconn, monkeypatch, caplog):
     monkeypatch.setattr(semantic, "SLOW_CALL", 0.05)
     with caplog.at_level(logging.WARNING, logger=semantic.__name__):

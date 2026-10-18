@@ -42,6 +42,10 @@ DEADLINE = 8.0
 # 호출 하나의 httpx 단계별 한도 기본값. 검색은 호출마다 남은 시간을 한도로 넘긴다(_within)
 TIMEOUT = DEADLINE
 SLOW_CALL = 2.0  # 초. 이보다 오래 걸린 호출은 단계와 시간을 경고 로그로 남긴다
+# 검색이 연속 BREAKER_FAILURES번 API 실패로 대체되면 BREAKER_COOLDOWN초 동안 Voyage를 부르지 않고
+# 바로 단어 일치 검색으로 간다. 어차피 대체될 검색이 한도까지 기다리지 않게 한다(이슈 #25)
+BREAKER_FAILURES = 3
+BREAKER_COOLDOWN = 30.0
 
 log = logging.getLogger(__name__)
 # 한도를 넘겨 버린 호출이 끝날 때까지 다음 검색을 막지 않도록 일꾼을 여유 있게 둔다
@@ -210,6 +214,51 @@ class Ranked:
     top_score: float  # 1위 리랭커 점수 (결과 없음 판정 근거)
 
 
+class _Breaker:
+    """API 실패가 이어지면 잠시 호출을 막는다(circuit breaker).
+
+    차단 시간이 지나면 검색 하나만 시험 삼아 보내고, 그 결과로 풀거나 다시 막는다.
+    시험 중에 들어온 검색은 막는다.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._failures = 0
+        self._open_until = 0.0
+        self._probing = False
+
+    def allow(self) -> bool:
+        with self._lock:
+            if self._failures < BREAKER_FAILURES:
+                return True
+            if self._probing or time.monotonic() < self._open_until:
+                return False
+            self._probing = True
+            return True
+
+    def succeeded(self) -> None:
+        with self._lock:
+            if self._failures >= BREAKER_FAILURES:
+                log.warning("Voyage API 호출이 다시 성공해 의미 검색을 재개한다")
+            self._failures = 0
+            self._probing = False
+
+    def failed(self) -> None:
+        with self._lock:
+            self._failures += 1
+            self._probing = False
+            if self._failures >= BREAKER_FAILURES:
+                self._open_until = time.monotonic() + BREAKER_COOLDOWN
+                log.warning(
+                    "Voyage API 호출이 %d번 잇달아 실패해 %.0f초 동안 쓰지 않는다",
+                    self._failures,
+                    BREAKER_COOLDOWN,
+                )
+
+
+_breaker = _Breaker()
+
+
 def _within(step: str, call: Callable[[float], T], deadline: float) -> T:
     """API 호출을 남은 시간 안에서만 기다린다. 넘으면 결과를 버리고 대체 경로로 보낸다.
 
@@ -250,6 +299,25 @@ def rank(
     client: Client,
 ) -> Ranked:
     """lexical: 필터를 건 BM25 상위 rowid. allowed: 필터에 맞는 rowid (필터가 없으면 None)."""
+    if not _breaker.allow():
+        raise SemanticUnavailable("Voyage API 호출이 잇달아 실패해 잠시 쓰지 않습니다")
+    try:
+        ranked = _rank(query, vectors, lexical, allowed, texts_of, client)
+    except SemanticUnavailable:
+        _breaker.failed()
+        raise
+    _breaker.succeeded()
+    return ranked
+
+
+def _rank(
+    query: str,
+    vectors: EntryVectors,
+    lexical: list[int],
+    allowed: set[int] | None,
+    texts_of: Callable[[list[int]], list[str]],
+    client: Client,
+) -> Ranked:
     deadline = time.monotonic() + DEADLINE
     scores = vectors.matrix @ _within("임베딩", lambda t: client.embed_query(query, t), deadline)
     order = np.argsort(-scores, kind="stable")
