@@ -9,10 +9,16 @@ docs/기획.md "원격 HTTP 서버 (M9)".
 - 토큰 인증: 서버가 Voyage 키를 보관하므로, 환경 변수 `SONBAE_TOKEN`의 토큰을
   `Authorization: Bearer` 헤더로 확인해 없거나 틀리면 401로 거절한다. 토큰 없이 외부에 열려고 하면
   기동하지 않는다(로컬 주소에서만 토큰 없이 실행할 수 있다).
+- 요청 제한: 인증을 통과한 MCP 요청을 토큰 버킷으로 세어(기본 분당 60회, 몰림 20회) 넘으면 429로
+  거절한다. 토큰이 새거나 에이전트가 검색을 반복해도 Voyage 비용이 한없이 늘지 않게 하는
+  안전장치다. 토큰 하나·서버 한 대라 카운터는 프로세스 메모리에 하나만 둔다.
 """
 
 import hmac
+import math
 import os
+import time
+from collections.abc import Callable
 
 import uvicorn
 from starlette.applications import Starlette
@@ -24,11 +30,68 @@ from sonbae import server
 HOST_ENV = "SONBAE_HOST"
 PORT_ENV = "PORT"
 TOKEN_ENV = "SONBAE_TOKEN"
+RATE_ENV = "SONBAE_RATE_PER_MINUTE"
+BURST_ENV = "SONBAE_RATE_BURST"
 # 로컬에서 실행하면 이 PC에서만 접속하게 한다. 컨테이너에서는 0.0.0.0으로 연다
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
 LOCAL_HOSTS = ("127.0.0.1", "localhost", "::1")
 MCP_PATH = "/mcp"
+# 에이전트 한 명의 검색(한 번에 2~5개, 분당 수십 회 이하)은 넉넉히 통과하고, 최악의 Voyage 비용은
+# 검색당 약 $0.0015 × 분당 60회 = 시간당 약 $5.4로 묶인다
+DEFAULT_RATE_PER_MINUTE = 60
+DEFAULT_BURST = 20
+
+
+class TokenBucket:
+    """최대 `capacity`개가 차 있고 초당 `rate`개씩 다시 차는 양동이. 요청마다 하나씩 쓴다.
+
+    매 분 0초에 초기화하는 고정 구간은 경계 앞뒤로 한도의 두 배가 통과해 쓰지 않는다.
+    이벤트 루프 안에서 await 없이 불려 동시에 실행되지 않으므로 잠금이 필요 없다.
+    """
+
+    def __init__(
+        self, rate: float, capacity: int, clock: Callable[[], float] = time.monotonic
+    ) -> None:
+        self.rate = rate
+        self.capacity = capacity
+        self.clock = clock
+        self.tokens = float(capacity)
+        self.updated = clock()
+
+    def take(self) -> float:
+        """하나를 쓸 수 있으면 쓰고 0을, 비었으면 다시 시도할 때까지의 초를 돌려준다."""
+        now = self.clock()
+        self.tokens = min(self.capacity, self.tokens + (now - self.updated) * self.rate)
+        self.updated = now
+        if self.tokens >= 1:
+            self.tokens -= 1
+            return 0.0
+        return (1 - self.tokens) / self.rate
+
+
+class RateLimit:
+    """MCP 경로 요청을 토큰 버킷으로 세어 넘으면 429와 `Retry-After`로 거절하는 ASGI 미들웨어."""
+
+    def __init__(self, app: ASGIApp, bucket: TokenBucket) -> None:
+        self.app = app
+        self.bucket = bucket
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http" and scope["path"].startswith(MCP_PATH):
+            wait = self.bucket.take()
+            if wait:
+                response = JSONResponse(
+                    {
+                        "error": "rate_limited",
+                        "message": "요청이 너무 많습니다. 잠시 뒤 다시 시도하세요.",
+                    },
+                    status_code=429,
+                    headers={"Retry-After": str(math.ceil(wait))},
+                )
+                await response(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
 
 
 class TokenAuth:
@@ -76,6 +139,11 @@ def app() -> Starlette:
         json_response=True,
         host=host,
     )
+    # 나중에 더한 미들웨어가 바깥에 놓인다. 인증 → 요청 제한 → MCP 순서로 거쳐
+    # 틀린 토큰은 세지 않는다
+    rate = float(os.environ.get(RATE_ENV, DEFAULT_RATE_PER_MINUTE)) / 60
+    burst = int(os.environ.get(BURST_ENV, DEFAULT_BURST))
+    starlette_app.add_middleware(RateLimit, bucket=TokenBucket(rate, burst))
     if token:
         starlette_app.add_middleware(TokenAuth, token=token)
     return starlette_app

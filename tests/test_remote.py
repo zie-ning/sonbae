@@ -21,8 +21,10 @@ from sonbae import db, remote, server
 def use_sample_db(sample_db, monkeypatch):
     monkeypatch.setenv(db.DB_PATH_ENV, str(sample_db))
     # 개발 PC에 설정된 값이 테스트에 섞이지 않게 한다
-    for name in (remote.HOST_ENV, remote.PORT_ENV, remote.TOKEN_ENV):
+    for name in (remote.HOST_ENV, remote.PORT_ENV, remote.TOKEN_ENV, remote.RATE_ENV):
         monkeypatch.delenv(name, raising=False)
+    # 요청 제한 테스트가 아니면 한도에 걸리지 않게 몰림 허용을 크게 둔다
+    monkeypatch.setenv(remote.BURST_ENV, "1000")
     server._database_path.cache_clear()
     yield
     server._database_path.cache_clear()
@@ -157,3 +159,60 @@ def test_refuses_public_host_without_token(monkeypatch):
     with pytest.raises(SystemExit, match=remote.TOKEN_ENV):
         remote.main()
     assert not prepared
+
+
+# ---- 요청 제한 ----
+
+
+class FakeClock:
+    def __init__(self) -> None:
+        self.now = 100.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def test_bucket_allows_burst_then_refills():
+    clock = FakeClock()
+    bucket = remote.TokenBucket(rate=1.0, capacity=3, clock=clock)
+    assert [bucket.take() for _ in range(3)] == [0, 0, 0]
+    assert bucket.take() == pytest.approx(1.0)  # 비었으면 하나가 찰 때까지 기다릴 시간
+    clock.now += 0.5
+    assert bucket.take() == pytest.approx(0.5)
+    clock.now += 0.5
+    assert bucket.take() == 0
+
+
+def test_bucket_does_not_exceed_capacity_after_idle():
+    clock = FakeClock()
+    bucket = remote.TokenBucket(rate=1.0, capacity=3, clock=clock)
+    clock.now += 3600  # 오래 쉬어도 몰림 허용 이상으로 쌓이지 않는다
+    assert [bucket.take() for _ in range(4)][-1] > 0
+
+
+def post(url: str, token: str | None = None) -> httpx.Response:
+    headers = {"Accept": "application/json, text/event-stream"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return httpx.post(url, json=INITIALIZE, headers=headers)
+
+
+def test_rejects_over_limit_with_retry_after(monkeypatch):
+    monkeypatch.setenv(remote.BURST_ENV, "3")
+    monkeypatch.setenv(remote.RATE_ENV, "6")  # 10초에 하나씩 찬다
+    with serving() as url:
+        codes = [post(url).status_code for _ in range(4)]
+        limited = post(url)
+    assert codes == [200, 200, 200, 429]
+    assert limited.status_code == 429
+    assert 1 <= int(limited.headers["retry-after"]) <= 10
+
+
+def test_wrong_token_is_not_counted(monkeypatch):
+    # 인증이 먼저라, 틀린 토큰 요청이 쌓여도 맞는 토큰의 한도를 쓰지 않는다
+    monkeypatch.setenv(remote.TOKEN_ENV, TOKEN)
+    monkeypatch.setenv(remote.BURST_ENV, "2")
+    monkeypatch.setenv(remote.RATE_ENV, "1")
+    with serving() as url:
+        assert {post(url, "wrong").status_code for _ in range(5)} == {401}
+        assert [post(url, TOKEN).status_code for _ in range(3)] == [200, 200, 429]
