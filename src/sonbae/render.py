@@ -9,17 +9,15 @@ from sonbae.search.query import (
     TechnologyResolution,
 )
 
-CITATION_RULE = (
-    "인용할 때는 회사명과 원문 링크를 함께 밝히고, 위 결과에 없는 사례는 지어내지 마세요."
-)
 # 사례는 설계 정답이 아니라 참고 자료라는 원칙 (docs/기획.md "호출 유도"의 사례 활용 원칙).
-# 도구 설명·서버 안내·prompt에는 전문을, 결과마다 붙는 안내에는 짧은 버전을 쓴다.
+# search 설명에 둔다. 출처(회사명·원문 링크)는 search 설명의 인용 규칙에서 따로 말한다.
+# 인용 규칙·이 원칙은 결과마다 붙이지 않는다. 결과에는 결과 상태에 따른 안내(없음, 적음 등)만
+# 넣는다 (사용자 결정, 이슈 #30)
 REFERENCE_PRINCIPLE = (
     "사례는 해당 회사의 규모·조직·기존 인프라에서 내린 선택이다. "
-    "사용자에게 참고 사례로 출처와 함께 소개하되 그대로 적용하라고 권하지 말고, "
+    "사용자에게 참고 사례로 소개하되 그대로 적용하라고 권하지 말고, "
     "사용자 상황과 다른 점을 함께 짚는다. 사례 소개와 자신의 제안은 구분해서 제시한다."
 )
-REFERENCE_RULE = "사례는 참고용으로 소개하고, 사용자 상황과의 차이를 짚어 자신의 제안과 구분하세요."
 _MAX_COMPANY_NAMES = 5
 
 GROUP_BY_LABELS: dict[str, str] = {
@@ -108,9 +106,6 @@ def search_result(query: str, filters: Filters, result: SearchResult, notes: lis
         lines.append(f"결과: 관련도 순 {shown}건")
     lines.append("")
     lines.append("\n\n".join(card(e) for e in result.entries))
-    lines.append("")
-    lines.append("근거 발췌와 전체 내용은 get_details(ids)로 확인하세요. " + CITATION_RULE)
-    lines.append(REFERENCE_RULE)
     return "\n".join(lines)
 
 
@@ -164,9 +159,6 @@ def details_result(
             f"※ 한 번에 {max_ids}건까지만 조회합니다. 제외된 ID: {', '.join(dropped)} "
             "(필요하면 나눠서 다시 호출하세요)"
         )
-    if parts:
-        notes.append(CITATION_RULE)
-        notes.append(REFERENCE_RULE)
     return "\n\n---\n\n".join(parts + ["\n".join(notes)] if notes else parts)
 
 

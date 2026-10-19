@@ -1,0 +1,81 @@
+# 호출률 평가(이슈 #30) 과제. 형식은 README.md "호출률 평가", 로더는 ../agent_call_run.py.
+#
+# E1(경쟁): M7 과제를 그대로 쓰고, 빈 폴더에 미끼 MCP 서버와 웹 검색을 함께 붙인다.
+# E2(작업 도중): 예제 저장소(fixtures/shop-api)에서 코딩을 시키고, 과제 안에 설계 판단을 숨긴다.
+#   expect_call = "required"는 불러야 함, "forbidden"은 부르면 안 됨.
+#   prompt에는 도구를 쓰라거나 사례를 찾으라는 말을 넣지 않는다.
+
+[e1]
+# M7 과제 id (eval/agent/tasks.toml). 설계 8, open 4, 호출 금지 3, 개념 1
+tasks = [
+    "t01", "t02", "t03", "t05", "t07", "t08", "t11", "t13",
+    "o01", "o03", "o06", "o09",
+    "t25", "t26", "t27",
+    "t28",
+]
+
+
+# ---------- E2: 불러야 함 (작업 안에 선택지가 있는 설계 판단) ----------
+
+[[e2]]
+id = "c01"
+expect_call = "required"
+prompt = "주문 생성할 때 재고를 차감하도록 넣어줘. 다음 주 타임세일 때 같은 상품에 주문이 한꺼번에 몰릴 거야."
+check = "동시성 제어(락, 원자적 차감) 선택"
+
+[[e2]]
+id = "c02"
+expect_call = "required"
+prompt = "PG 결제 승인 호출이 가끔 타임아웃 나. 결제 쪽에 재시도를 넣어줘."
+check = "재시도와 중복 결제(멱등성) 판단"
+
+[[e2]]
+id = "c03"
+expect_call = "required"
+prompt = "상품 상세 조회가 느리다는 얘기가 많아. 캐시를 붙여줘."
+check = "로컬 캐시와 분산 캐시, 서버 3대의 일관성 (README에만 서버 대수가 있음)"
+
+[[e2]]
+id = "c04"
+expect_call = "required"
+prompt = "주문이 완료되면 알림 서비스로 이벤트를 보내게 해줘. 이벤트가 유실되면 안 돼."
+check = "트랜잭셔널 아웃박스·메시지 큐 선택"
+
+[[e2]]
+id = "c05"
+expect_call = "required"
+prompt = "상품 검색을 '가볍고 조용한 키보드'처럼 자연어로 해도 찾게 바꾸고 싶어. 어떻게 붙이면 좋을지 보고 시작해줘."
+check = "LLM·임베딩 검색 도입 방식"
+
+[[e2]]
+id = "c06"
+expect_call = "required"
+prompt = "상품 검색이 LIKE 쿼리라 데이터가 늘면서 너무 느려졌어. 검색 엔진을 따로 둘지 판단해서 코드를 그 방향으로 정리해줘."
+check = "검색 엔진 도입과 MySQL 동기화 방식"
+
+
+# ---------- E2: 부르면 안 됨 (선택지가 없는 코딩 작업) ----------
+
+[[e2]]
+id = "n01"
+expect_call = "forbidden"
+prompt = "주문 목록 조회에 페이지네이션을 추가해줘. page와 size를 받으면 돼."
+check = "단순 기능 추가"
+
+[[e2]]
+id = "n02"
+expect_call = "forbidden"
+prompt = "주문 금액이 수량을 반영하지 않는다는 문의가 들어왔어. 고치고 테스트도 추가해줘."
+check = "버그 수정 (total에 quantity를 곱하지 않음)"
+
+[[e2]]
+id = "n03"
+expect_call = "forbidden"
+prompt = "api.py의 람다 라우트들을 이름 있는 함수로 바꿔서 읽기 쉽게 리팩터링해줘. 동작은 그대로 둬."
+check = "리팩터링"
+
+[[e2]]
+id = "n04"
+expect_call = "forbidden"
+prompt = "README에 로컬에서 테스트 돌리는 방법을 추가해줘."
+check = "문서 작성"

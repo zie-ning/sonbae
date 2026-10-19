@@ -39,6 +39,8 @@ eval/search/llm_cache/
 # M7 에이전트 평가 원본 로그와 로컬 경로가 든 MCP 설정 (eval/agent_run.py). records.jsonl만 커밋
 eval/runs/agent/*/raw/
 eval/runs/agent/*/mcp_*.json
+# 호출률 평가(eval/agent_call_run.py)가 서버 버전별로 꺼내 설치한 코드와 가상 환경
+eval/runs/agent/*/servers/
 
 # M10 리랭커 점수 캐시 (eval/search_rerank.py)
 eval/search/rerank_cache/
