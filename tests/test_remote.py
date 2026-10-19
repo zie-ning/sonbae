@@ -366,6 +366,17 @@ def test_rejected_requests_are_logged_and_fly_request_id_is_used(monkeypatch, js
     assert rejected["request_id"] == "fly-123"
 
 
+def test_malformed_fly_request_id_is_sanitized(monkeypatch, json_lines):
+    # 클라이언트가 보낸 헤더라 ASCII가 아니거나 길 수 있다. 500 없이 처리하고 잘라서 남긴다
+    monkeypatch.setenv(remote.TOKEN_ENV, TOKEN)
+    with serving() as url:
+        bad = httpx.post(url, json=INITIALIZE, headers={"Fly-Request-Id": b"bad\xff-id"})
+        long = httpx.post(url, json=INITIALIZE, headers={"Fly-Request-Id": "a" * 500})
+    assert bad.status_code == long.status_code == 401
+    ids = [r["request_id"] for r in events(json_lines, "http_request")]
+    assert ids == ["bad�-id", "a" * remote.MAX_REQUEST_ID_BYTES]
+
+
 def test_failed_tool_call_is_logged(json_lines, monkeypatch, tmp_path):
     monkeypatch.setenv(db.DB_PATH_ENV, str(tmp_path / "none.sqlite"))
     server._database_path.cache_clear()

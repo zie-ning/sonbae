@@ -46,6 +46,7 @@ DEFAULT_PORT = 8000
 LOCAL_HOSTS = ("127.0.0.1", "localhost", "::1")
 MCP_PATH = "/mcp"
 HEALTH_PATH = "/health"
+MAX_REQUEST_ID_BYTES = 64
 # 에이전트 한 명의 검색(한 번에 2~5개, 분당 수십 회 이하)은 넉넉히 통과하고, 최악의 Voyage 비용은
 # 검색당 약 $0.0015 × 분당 60회 = 시간당 약 $5.4로 묶인다
 DEFAULT_RATE_PER_MINUTE = 60
@@ -69,7 +70,11 @@ class RequestLog:
             await self.app(scope, receive, send)
             return
         headers = dict(scope["headers"])
-        rid = headers.get(b"fly-request-id", b"").decode() or uuid.uuid4().hex[:16]
+        # 클라이언트가 보낸 값이라 임의 바이트일 수 있다. 디코딩 오류로 인증 전에 500이 나거나
+        # 긴 값이 로그에 그대로 들어가지 않게, 길이를 자르고 ASCII가 아닌 바이트는 대체 문자로
+        # 바꾼다
+        raw_rid = headers.get(b"fly-request-id", b"")[:MAX_REQUEST_ID_BYTES]
+        rid = raw_rid.decode("ascii", errors="replace") or uuid.uuid4().hex[:16]
         token = logs.request_id.set(rid)
         status = 500  # 응답을 시작하기 전에 예외가 나면 uvicorn이 500으로 답한다
         start = time.perf_counter()
