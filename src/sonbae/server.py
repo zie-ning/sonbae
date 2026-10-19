@@ -3,8 +3,10 @@
 도구 입력 스키마의 문제 유형·도메인 enum은 taxonomy에서 만들어 추출에 쓴 값과 항상 같다.
 """
 
+import logging
 import sqlite3
 import threading
+import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from functools import cache
@@ -26,6 +28,8 @@ Domain = Literal[taxonomy.domain_names()]  # type: ignore[valid-type]
 # 상세는 길어서 한 번에 많이 열면 에이전트 맥락을 많이 차지한다. 소개할 사례만 골라 열게 한다
 # (M5 사용자 결정: search가 최대 10건을 돌려줘도 5건 유지)
 MAX_DETAIL_IDS = 5
+
+log = logging.getLogger(__name__)
 
 # 세 도구 모두 검색 DB를 읽기만 한다
 # (첫 실행 때 고정된 DB 파일을 내려받는 것은 서버 준비 과정이라 도구 동작으로 보지 않는다)
@@ -165,19 +169,61 @@ def _connection() -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
-def _quietly(step: Callable[[], object]) -> None:
+class _Readiness:
+    """기동 준비(DB·항목 임베딩, 형태소 분석기)가 끝났는지. 원격 서버의 `/health`가 본다 (M9)."""
+
+    STEPS = ("db", "analyzer")
+
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        self.done = {step: threading.Event() for step in self.STEPS}
+        self.errors: dict[str, str] = {}
+
+    def status(self) -> tuple[str, dict[str, str]]:
+        """("ok" | "starting" | "error", 단계별 상태). 실패한 단계는 재시작 전까지 그대로다."""
+        steps = {}
+        for step, event in self.done.items():
+            if event.is_set():
+                steps[step] = "ok"
+            elif step in self.errors:
+                steps[step] = (
+                    "error"  # 이유는 로그에만 남긴다(경로 등이 담길 수 있어 응답에는 안 넣음)
+                )
+            else:
+                steps[step] = "starting"
+        if all(v == "ok" for v in steps.values()):
+            return "ok", steps
+        if "error" in steps.values():
+            return "error", steps
+        return "starting", steps
+
+
+readiness = _Readiness()
+
+
+def _quietly(name: str, step: Callable[[], object]) -> None:
     try:
         step()
-    except Exception:
-        pass  # 실패하면 도구를 호출할 때 다시 시도하며 이유를 결과로 알린다
+    except Exception as e:
+        # 실패하면 도구를 호출할 때 다시 시도하며 이유를 결과로 알린다
+        readiness.errors[name] = str(e) or type(e).__name__
+        log.warning("기동 준비 실패(%s): %s", name, readiness.errors[name])
 
 
 def _connect_then_check_update() -> None:
     # 지금 쓸 DB와 항목 임베딩(의미 검색)을 먼저 준비한 뒤 새 버전을 받아 둔다.
-    # 새 DB는 다음 기동부터 쓴다
+    # 새 DB는 다음 기동부터 쓰므로 새 버전 확인은 준비 완료를 늦추지 않는다
     with _connection() as conn:
         semantic.load_vectors(conn)
+    readiness.done["db"].set()
     db.check_for_update()
+
+
+def _warm_up_analyzer() -> None:
+    analyzer.warm_up()
+    readiness.done["analyzer"].set()
 
 
 def _prepare() -> list[threading.Thread]:
@@ -186,13 +232,34 @@ def _prepare() -> list[threading.Thread]:
 
     DB를 연 뒤에는 하루 한 번 최신 DB가 있는지 확인해 받아 둔다.
     """
+    readiness.reset()
     threads = [
-        threading.Thread(target=_quietly, args=(step,), daemon=True)
-        for step in (_connect_then_check_update, analyzer.warm_up)
+        threading.Thread(target=_quietly, args=(name, step), daemon=True)
+        for name, step in (("db", _connect_then_check_update), ("analyzer", _warm_up_analyzer))
     ]
     for thread in threads:
         thread.start()
     return threads
+
+
+@contextmanager
+def _tool_log(tool: str) -> Iterator[dict]:
+    """도구 호출 하나의 소요 시간과 결과를 `tool_call` 로그로 남긴다. 넘겨준 dict에 필드를 더한다.
+
+    검색어 원문은 사용자의 설계 내용이 담길 수 있어 남기지 않고 길이만 남긴다. 원격 서버는 JSON으로
+    표준 출력에 쓰고(`sonbae.logs`), stdio 서버는 경고 이상만 표준 오류로 낸다(`main`).
+    """
+    fields: dict = {"event": "tool_call", "tool": tool}
+    start = time.perf_counter()
+    try:
+        yield fields
+        fields["ok"] = True
+    except Exception as e:
+        fields.update(ok=False, error=type(e).__name__)
+        raise
+    finally:
+        fields["duration_ms"] = round((time.perf_counter() - start) * 1000, 1)
+        log.info("tool_call", extra={"fields": fields})
 
 
 def _filters(
@@ -216,10 +283,22 @@ def search(
     domain: DomainArg = None,
     technologies: TechnologiesArg = None,
 ) -> str:
-    filters, notes = _filters(problem_type, domain, technologies)
-    with _connection() as conn:
-        result = q.search(conn, query, filters)
-    return render.search_result(query, filters, result, notes)
+    with _tool_log("search") as fields:
+        filters, notes = _filters(problem_type, domain, technologies)
+        fields.update(
+            query_chars=len(query),
+            problem_type=problem_type,
+            domain=domain,
+            technologies=filters.technologies,
+        )
+        with _connection() as conn:
+            result = q.search(conn, query, filters)
+        fields.update(
+            mode="semantic" if result.semantic else "lexical",
+            fallback=result.fallback,
+            results=len(result.entries),
+        )
+        return render.search_result(query, filters, result, notes)
 
 
 @server.tool(description=GET_DETAILS_DESCRIPTION, structured_output=False, annotations=READ_ONLY)
@@ -228,11 +307,13 @@ def get_details(
         list[str], Field(min_length=1, description=f"항목 ID 목록. 최대 {MAX_DETAIL_IDS}건")
     ],
 ) -> str:
-    ids = list(dict.fromkeys(i.strip() for i in ids if i.strip()))
-    wanted, dropped = ids[:MAX_DETAIL_IDS], ids[MAX_DETAIL_IDS:]
-    with _connection() as conn:
-        details, missing = q.get_details(conn, wanted)
-    return render.details_result(details, missing, dropped, MAX_DETAIL_IDS)
+    with _tool_log("get_details") as fields:
+        ids = list(dict.fromkeys(i.strip() for i in ids if i.strip()))
+        wanted, dropped = ids[:MAX_DETAIL_IDS], ids[MAX_DETAIL_IDS:]
+        with _connection() as conn:
+            details, missing = q.get_details(conn, wanted)
+        fields.update(requested=len(ids), found=len(details), missing=len(missing))
+        return render.details_result(details, missing, dropped, MAX_DETAIL_IDS)
 
 
 @server.tool(description=AGGREGATE_DESCRIPTION, structured_output=False, annotations=READ_ONLY)
@@ -243,10 +324,17 @@ def aggregate(
     technologies: TechnologiesArg = None,
     top_n: Annotated[int, Field(ge=1, le=50, description="상위 몇 개까지 보여 줄지")] = 10,
 ) -> str:
-    filters, notes = _filters(problem_type, domain, technologies)
-    with _connection() as conn:
-        result = q.aggregate(conn, group_by, filters, top_n)
-    return render.aggregate_result(group_by, filters, result, notes)
+    with _tool_log("aggregate") as fields:
+        filters, notes = _filters(problem_type, domain, technologies)
+        fields.update(
+            group_by=group_by,
+            problem_type=problem_type,
+            domain=domain,
+            technologies=filters.technologies,
+        )
+        with _connection() as conn:
+            result = q.aggregate(conn, group_by, filters, top_n)
+        return render.aggregate_result(group_by, filters, result, notes)
 
 
 @server.prompt(
@@ -272,6 +360,8 @@ def sonbae(topic: Annotated[str, Field(description="찾아볼 설계 주제나 �
 
 
 def main() -> None:
+    # SDK가 INFO 로그를 표준 오류로 내도록 설정하므로, stdio에서는 도구 호출 로그를 내지 않는다
+    logging.getLogger("sonbae").setLevel(logging.WARNING)
     # initialize 응답을 막지 않도록 준비는 백그라운드에서 한다
     _prepare()
     server.run()

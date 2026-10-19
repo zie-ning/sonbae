@@ -1399,6 +1399,7 @@ dependencies = [
     { name = "mcp" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "uvicorn" },
 ]
 
 [package.dev-dependencies]
@@ -1420,6 +1421,7 @@ requires-dist = [
     { name = "kiwipiepy" },
     { name = "mcp" },
     { name = "numpy" },
+    { name = "uvicorn" },
 ]
 
 [package.metadata.requires-dev]

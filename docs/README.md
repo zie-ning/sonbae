@@ -2,15 +2,15 @@
 
 프로젝트의 모든 문서와 마일스톤 현황을 한곳에서 관리한다. 작업을 시작할 때 이 문서의 "지금 할 일"부터 본다.
 
-> 최종 갱신: 2026-10-15
+> 최종 갱신: 2026-10-19
 
 ## 지금 할 일
 
 - **버그 수정 완료**: `search` 병렬 호출 시 공유 SQLite 연결 때문에 한쪽이 실패하던 문제 [이슈 #22](https://github.com/zie-ning/sonbae/issues/22)를 도구 호출마다 연결을 열고 닫도록 고쳤다 ([PR #24](https://github.com/zie-ning/sonbae/pull/24), [기획.md](기획.md#자동-갱신-m8)). 동시 검색이 몰릴 때 Voyage 호출 일꾼 4개가 병목이 되는 문제 [이슈 #25](https://github.com/zie-ning/sonbae/issues/25)는 포기한 호출 취소, 남은 시간 한도, 연속 실패 시 차단으로 줄였고([M10.md](milestones/M10.md#후속-동시-검색과-voyage-지연-대응-2026-10-18-이슈-25)), 비동기 호출·사용자별 제한은 M9 때 검토한다
 - **검색 후속 작업**: 형태소 분리 [이슈 #15](https://github.com/zie-ning/sonbae/issues/15). 응답 지연 개선 [이슈 #19](https://github.com/zie-ning/sonbae/issues/19)는 HTTP 클라이언트 재사용으로 검색 평균 1.4~1.6초 → 0.6초 ([M10.md](milestones/M10.md#후속-http-클라이언트-재사용-2026-10-14-이슈-19))
-- **다음 마일스톤**: [M9. 원격 HTTP 서버](milestones/M9.md). 호스팅 방식과 비용은 착수 시 결정
+- **완료**: [M9. 원격 HTTP 서버](milestones/M9.md). 같은 도구를 Streamable HTTP로 열어 Fly.io에 배포했다(포트폴리오용, README에 주소 미노출). 미룬 것: Prometheus 지표, Voyage 호출 병목 [이슈 #25](https://github.com/zie-ning/sonbae/issues/25)
 - **운영**: 우아한형제들은 자동 갱신에서 빠지므로 로컬에서 주기적으로 갱신 (`pipeline.update woowahan` → `release_db --upload` → PR, [기획.md](기획.md#자동-갱신-m8)). 자동 갱신은 저장소 시크릿 `OPENAI_API_KEY`, `VOYAGE_API_KEY`를 쓴다(M10, 등록됨)
-- **미결정**: 원격 서버(M9)가 Voyage 키를 보관해 사용자가 키 없이 의미 검색을 쓰게 할지(M10에서 보류), M7 결과로 드러난 사례 소개 방식 개선 ([기획.md](기획.md#미결정-사항)). M6에서 넘어온 검색 잡음 항목은 영향이 작아 고치지 않기로 함 ([M7.md](milestones/M7.md#m6-검색-잡음-항목-분석-2026-10-07))
+- **미결정**: M7 결과로 드러난 사례 소개 방식 개선 ([기획.md](기획.md#미결정-사항)). M6에서 넘어온 검색 잡음 항목은 영향이 작아 고치지 않기로 함 ([M7.md](milestones/M7.md#m6-검색-잡음-항목-분석-2026-10-07))
 
 ## 마일스톤 현황
 
@@ -25,7 +25,7 @@
 | M6. 마무리와 배포 | ✅ 완료 | 검색 DB는 GitHub Release 다운로드(태그·체크섬 고정), 기동 때 백그라운드 준비, 기술 필터 계열 펼치기, 이용약관 확인 후 고지와 함께 배포, `uv tool install` 설치 README, 깨끗한 환경·Claude Code 실사용 확인. PyPI 전환은 M8로 | [M6.md](milestones/M6.md) |
 | M7. 에이전트 A/B 평가 (확장) | ✅ 완료 | 네 조건(mcp·none·web·web-ask) 429회 실행, 답변 품질 비교 315쌍. MCP는 도구 없음에 6승 80패(사례에 분량을 써 설계 내용이 줄어듦), 웹 검색 지시 조건에는 61승 24패 | [M7.md](milestones/M7.md) |
 | M8. 자동 갱신 파이프라인 (확장) | ✅ 완료 | 1단계: 새 글만 수집·추출·확장·빌드하는 `pipeline.update`(추출 기록 기준 새 글 판단, 블로그별 상한, 부분 실패 보고). 2단계: 발췌 검증 실패분 `data/quarantine.jsonl` 격리, 최종·재시도 전 탈락률 급등 감지. 3단계: 주 1회 Actions 워크플로(Release 배포, 데이터 PR 자동 병합, 문제 시 이슈). 4단계: 서버가 최신 Release를 하루 1회 확인해 다음 기동부터 사용. 우아한형제들은 Actions IP 차단으로 로컬 갱신. 조용한 고장 감지(목록 감소·짧은 본문 보류). PyPI 전환은 보류(M9 원격 서버가 설치 편의 해결) | [M8.md](milestones/M8.md) |
-| M9. 원격 HTTP 서버 (확장) | ⏳ 대기 | | [M9.md](milestones/M9.md) |
+| M9. 원격 HTTP 서버 (확장) | ✅ 완료 | `sonbae-http`(상태 없는 Streamable HTTP, Bearer 토큰, 토큰 버킷 요청 제한, `/health`, JSON 로그)를 Fly.io(도쿄, 1GB, 자동 정지·시작)에 배포. 의미 검색 0.5~0.7초, 정지 후 첫 요청 약 15초, Claude Code 실사용 확인. 포트폴리오용이라 README에 주소 미노출 | [M9.md](milestones/M9.md) |
 | M10. 검색 개편 (확장) | ✅ 완료 | BM25 + voyage-4-large 후보를 Voyage rerank-3로 2단 판정(키가 없으면 BM25로 대체). 평가셋 62개(근접 주제·표현 차이 추가)에서 Recall@5 0.549 → 0.746, 없는 주제 결과 없음 53% → 94%, 무관 카드 44% → 22%. 검색 DB Release db-2026.10.14.2 | [M10.md](milestones/M10.md) |
 
 ## 문서 목록
