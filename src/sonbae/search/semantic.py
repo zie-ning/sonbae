@@ -48,8 +48,15 @@ BREAKER_FAILURES = 3
 BREAKER_COOLDOWN = 30.0
 
 log = logging.getLogger(__name__)
-# 한도를 넘겨 버린 호출이 끝날 때까지 다음 검색을 막지 않도록 일꾼을 여유 있게 둔다
-_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="voyage")
+# Voyage 호출 일꾼 수. 검색 하나는 임베딩·리랭커를 차례로 불러 한 번에 일꾼 하나를 쓴다.
+# 4개였을 때 원격 서버에서 동시 검색 16개가 일꾼 앞에 줄을 서 3초 걸렸고, 로컬(CPU 1개)에서
+# 32개로 늘리자 동시 32개가 4.75초 → 1.36초로 줄었다(이슈 #27). 호출은 대부분 응답 대기라
+# 스레드가 늘어도 CPU 부담이 작다. 한도를 넘겨 버린 호출이 남아 있어도 다음 검색을 막지 않는다
+WORKERS_ENV = "SONBAE_VOYAGE_WORKERS"
+DEFAULT_WORKERS = 32
+_executor = ThreadPoolExecutor(
+    max_workers=int(os.environ.get(WORKERS_ENV, DEFAULT_WORKERS)), thread_name_prefix="voyage"
+)
 T = TypeVar("T")
 
 
