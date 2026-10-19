@@ -97,10 +97,11 @@ def test_stateless_clients_run_concurrently(url):
 
 def test_host_and_port_from_env(monkeypatch):
     calls = {}
-    monkeypatch.setattr(remote.server, "_prepare", lambda: [])
     monkeypatch.setattr(remote.logs, "configure", lambda: None)
     monkeypatch.setattr(
-        remote.uvicorn, "run", lambda app, host, port, **kw: calls.update(host=host, port=port)
+        remote._PrepareAfterBind,
+        "run",
+        lambda self: calls.update(host=self.config.host, port=self.config.port),
     )
     remote.main()
     assert calls == {"host": remote.DEFAULT_HOST, "port": remote.DEFAULT_PORT}
@@ -155,6 +156,30 @@ def test_accepts_correct_token(secured_url):
     result = asyncio.run(run())
     assert not result.is_error
     assert "선착순" in result.content[0].text
+
+
+def test_prepare_starts_after_port_is_open(monkeypatch):
+    # 준비가 포트 열기를 늦추면 Fly.io 프록시가 연결을 포기한다. 준비를 시작할 때 이미 접속돼야 한다
+    port = free_port()
+    connectable = []
+
+    def prepare():
+        with socket.socket() as s:
+            connectable.append(s.connect_ex(("127.0.0.1", port)) == 0)
+        return []
+
+    monkeypatch.setattr(remote.server, "_prepare", prepare)
+    config = uvicorn.Config(remote.app(), host="127.0.0.1", port=port, log_level="warning")
+    http = remote._PrepareAfterBind(config)
+    thread = threading.Thread(target=http.run, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 10
+    while not connectable:
+        assert time.monotonic() < deadline, "준비가 시작되지 않았다"
+        time.sleep(0.05)
+    http.should_exit = True
+    thread.join(timeout=10)
+    assert connectable == [True]
 
 
 def test_refuses_public_host_without_token(monkeypatch):

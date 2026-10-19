@@ -214,17 +214,29 @@ def app() -> Starlette:
     return starlette_app
 
 
+class _PrepareAfterBind(uvicorn.Server):
+    """포트를 연 뒤에 기동 준비(DB·형태소 분석기)를 시작하는 uvicorn 서버.
+
+    준비를 먼저 시작하면 CPU 1개짜리 머신에서 준비 스레드와 경쟁해 포트를 여는 데 8.5초가 걸렸고,
+    Fly.io 프록시가 그동안 연결을 15번 시도하다 포기해 첫 요청이 실패할 수 있었다. 포트를 먼저
+    열면 프록시는 바로 연결되고, 준비가 끝날 때까지 `/health`는 503, 도구 호출은 준비를 기다린다.
+    """
+
+    async def startup(self, sockets=None) -> None:
+        await super().startup(sockets=sockets)
+        server._prepare()
+
+
 def main() -> None:
     # 설정이 잘못됐으면 DB를 준비하기 전에 멈춘다
     starlette_app = app()
     logs.configure()  # 기동 준비 실패 경고도 JSON으로 남게 먼저 설정한다
-    # stdio 서버와 같이 DB·형태소 분석기 준비는 백그라운드에서 한다
-    server._prepare()
     # uvicorn 자체 로그 설정을 끄고 루트(JSON)로 모은다. 접근 로그는 RequestLog가 대신 남긴다
-    uvicorn.run(
+    config = uvicorn.Config(
         starlette_app,
         host=_host(),
         port=int(os.environ.get(PORT_ENV, DEFAULT_PORT)),
         log_config=None,
         access_log=False,
     )
+    _PrepareAfterBind(config).run()
