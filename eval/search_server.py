@@ -52,10 +52,10 @@ class CachedClient:
         self.index.build(ctx.conn)
         self.reranker = Reranker(next(s for s in RERANKERS if s.key == RERANKER))
 
-    def embed_query(self, text: str) -> np.ndarray:
+    def embed_query(self, text: str, timeout: float | None = None) -> np.ndarray:
         return self.index.query_vector(text).astype(np.float32)
 
-    def rerank(self, query: str, documents: list[str]) -> list[float]:
+    def rerank(self, query: str, documents: list[str], timeout: float | None = None) -> list[float]:
         return self.reranker.scores(query, documents)
 
 

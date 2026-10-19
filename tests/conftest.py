@@ -114,6 +114,14 @@ def no_voyage_key(monkeypatch):
     monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def fresh_breaker(monkeypatch):
+    # 대체 경로를 시험하는 테스트가 쌓은 API 실패가 다른 테스트의 의미 검색을 막지 않게 한다
+    from sonbae.search import semantic
+
+    monkeypatch.setattr(semantic, "_breaker", semantic._Breaker())
+
+
 @pytest.fixture(scope="session")
 def sample_db(tmp_path_factory) -> Path:
     path = tmp_path_factory.mktemp("db") / "techblog.sqlite"

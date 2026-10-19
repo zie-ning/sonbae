@@ -1,7 +1,9 @@
 """의미 검색(M10) 테스트: 가짜 임베딩·리랭커 클라이언트로 2단 판정, 필터, 대체 경로를 본다."""
 
 import logging
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 import numpy as np
@@ -30,16 +32,16 @@ class FakeClient:
         self.query_vector = np.asarray(query_vector, dtype=np.float32)
         self.reranked: list[list[str]] = []
 
-    def embed_query(self, text: str) -> np.ndarray:
+    def embed_query(self, text: str, timeout: float | None = None) -> np.ndarray:
         return semantic.normalize(self.query_vector)
 
-    def rerank(self, query: str, documents: list[str]) -> list[float]:
+    def rerank(self, query: str, documents: list[str], timeout: float | None = None) -> list[float]:
         self.reranked.append(documents)
         return [next((v for k, v in self.scores.items() if k in doc), 0.1) for doc in documents]
 
 
 class BrokenClient(FakeClient):
-    def rerank(self, query: str, documents: list[str]) -> list[float]:
+    def rerank(self, query: str, documents: list[str], timeout: float | None = None) -> list[float]:
         raise semantic.SemanticUnavailable("Voyage API가 오류를 돌려줬습니다(HTTP 500)")
 
 
@@ -186,6 +188,26 @@ def test_voyage_client_parses_responses():
     assert all(r.headers["Authorization"] == "Bearer key" for r in requests)
 
 
+def test_voyage_client_passes_call_timeout():
+    # 검색이 넘긴 한도는 이번 요청에만 쓰고, 주지 않으면 클라이언트 기본값을 쓴다
+    timeouts: list[float] = []
+
+    def handler(request):
+        timeouts.append(request.extensions["timeout"]["read"])
+        return httpx.Response(200, json={"data": [{"index": 0, "relevance_score": 0.5}]})
+
+    client = mock_client(handler)
+    client.rerank("쿠폰", ["a"], timeout=1.5)
+    client.rerank("쿠폰", ["a"])
+    assert timeouts == [1.5, semantic.TIMEOUT]
+
+
+def test_call_gets_time_left_in_search():
+    seen: list[float] = []
+    semantic._within("임베딩", seen.append, time.monotonic() + 2.0)
+    assert 1.5 < seen[0] <= 2.0
+
+
 def test_client_from_env_reuses_one_client_per_key(monkeypatch):
     # 검색마다 클라이언트를 새로 만들면 SSL 설정에 호출당 약 0.4초가 든다(이슈 #19)
     monkeypatch.setattr(semantic, "_clients", {})
@@ -203,9 +225,9 @@ class SlowClient(FakeClient):
         super().__init__(scores)
         self.delay = delay
 
-    def rerank(self, query: str, documents: list[str]) -> list[float]:
+    def rerank(self, query: str, documents: list[str], timeout: float | None = None) -> list[float]:
         time.sleep(self.delay)
-        return super().rerank(query, documents)
+        return super().rerank(query, documents, timeout)
 
 
 def test_falls_back_when_api_exceeds_search_deadline(vconn, monkeypatch):
@@ -217,6 +239,100 @@ def test_falls_back_when_api_exceeds_search_deadline(vconn, monkeypatch):
     assert not result.semantic
     assert result.fallback == "Voyage API 응답이 0.2초 안에 오지 않았습니다"
     assert ids(result)[0] == "case_0001"
+
+
+def test_abandoned_queued_call_is_cancelled(monkeypatch):
+    # 일꾼을 못 받은 채 버린 호출은 나중에도 실행되지 않는다(이슈 #25)
+    pool = ThreadPoolExecutor(max_workers=1)
+    monkeypatch.setattr(semantic, "_executor", pool)
+    release = threading.Event()
+    pool.submit(release.wait)  # 하나뿐인 일꾼을 막아 둔다
+    ran = []
+    with pytest.raises(semantic.SemanticUnavailable):
+        semantic._within("임베딩", lambda t: ran.append(True), time.monotonic() + 0.05)
+    release.set()
+    pool.shutdown(wait=True)
+    assert ran == []
+
+
+def test_breaker_skips_api_after_repeated_failures(vconn, monkeypatch):
+    # 연속 실패 뒤에는 Voyage를 부르지 않고 바로 단어 일치 검색으로 간다(이슈 #25)
+    monkeypatch.setattr(semantic, "BREAKER_FAILURES", 2)
+    broken = BrokenClient({})
+    for _ in range(2):
+        assert q.search(vconn, "쿠폰", q.Filters(), broken).fallback.endswith("(HTTP 500)")
+    healthy = FakeClient({"원자 연산": 0.9})
+    result = q.search(vconn, "쿠폰", q.Filters(), healthy)
+    assert not result.semantic
+    assert result.fallback == "Voyage API 호출이 잇달아 실패해 잠시 쓰지 않습니다"
+    assert healthy.reranked == []
+
+
+def test_breaker_probes_once_after_cooldown(vconn, monkeypatch):
+    monkeypatch.setattr(semantic, "BREAKER_FAILURES", 1)
+    monkeypatch.setattr(semantic, "BREAKER_COOLDOWN", 0.05)
+    q.search(vconn, "쿠폰", q.Filters(), BrokenClient({}))
+    time.sleep(0.06)
+    # 차단 시간이 지나면 한 번 시험하고, 실패하면 다시 막는다
+    assert q.search(vconn, "쿠폰", q.Filters(), BrokenClient({})).fallback.endswith("(HTTP 500)")
+    assert q.search(vconn, "쿠폰", q.Filters(), FakeClient({})).fallback.startswith(
+        "Voyage API 호출이"
+    )
+    time.sleep(0.06)
+    # 시험이 성공하면 풀린다
+    assert q.search(vconn, "쿠폰", q.Filters(), FakeClient({"원자 연산": 0.9})).semantic
+    assert q.search(vconn, "쿠폰", q.Filters(), FakeClient({"원자 연산": 0.9})).semantic
+
+
+def test_breaker_blocks_other_searches_while_probing(monkeypatch):
+    monkeypatch.setattr(semantic, "BREAKER_FAILURES", 1)
+    monkeypatch.setattr(semantic, "BREAKER_COOLDOWN", 0.0)
+    breaker = semantic._Breaker()
+    breaker.failed(breaker.allow())
+    probe = breaker.allow()  # 시험 하나
+    assert probe is not None
+    assert breaker.allow() is None  # 시험이 끝나기 전 다른 검색
+    breaker.succeeded(probe)
+    assert breaker.allow() is not None
+
+
+def test_breaker_ignores_late_results_from_before_it_opened(monkeypatch):
+    # 막기 전에 들어온 검색이 늦게 성공해도 차단을 풀지 않고, 늦게 실패해도 시험을 끊지 않는다
+    monkeypatch.setattr(semantic, "BREAKER_FAILURES", 2)
+    monkeypatch.setattr(semantic, "BREAKER_COOLDOWN", 0.0)
+    breaker = semantic._Breaker()
+    early = [breaker.allow() for _ in range(4)]
+    breaker.failed(early[0])
+    breaker.failed(early[1])
+    probe = breaker.allow()
+    breaker.succeeded(early[2])
+    breaker.failed(early[3])
+    assert breaker.allow() is None  # 시험은 아직 진행 중
+    breaker.succeeded(probe)
+    assert breaker.allow() is not None
+
+
+def test_unexpected_error_still_ends_probe(vconn, monkeypatch):
+    monkeypatch.setattr(semantic, "BREAKER_FAILURES", 1)
+    monkeypatch.setattr(semantic, "BREAKER_COOLDOWN", 0.0)
+
+    class Crashing(FakeClient):
+        def rerank(self, query, documents, timeout=None):
+            raise RuntimeError("예상 밖 오류")
+
+    for _ in range(2):  # 차단 뒤 시험이 예외로 끝나도 다음 시험을 막지 않는다
+        with pytest.raises(RuntimeError):
+            q.search(vconn, "쿠폰", q.Filters(), Crashing({}))
+    assert q.search(vconn, "쿠폰", q.Filters(), FakeClient({"원자 연산": 0.9})).semantic
+
+
+def test_malformed_response_becomes_unavailable():
+    client = mock_client(lambda request: httpx.Response(200, text="not json"))
+    with pytest.raises(semantic.SemanticUnavailable, match="해석하지 못했습니다"):
+        client.embed_query("쿠폰")
+    client = mock_client(lambda request: httpx.Response(200, json={"oops": []}))
+    with pytest.raises(semantic.SemanticUnavailable, match="해석하지 못했습니다"):
+        client.rerank("쿠폰", ["a"])
 
 
 def test_slow_call_is_logged(vconn, monkeypatch, caplog):

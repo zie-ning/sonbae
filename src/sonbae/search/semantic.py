@@ -39,8 +39,13 @@ ITEM_MIN = 0.50
 # 검색으로 대체한다. 정상 응답은 합쳐 1~2초인데, 호출 하나가 33초 걸린 적이 있다(M10 R5).
 # httpx의 timeout은 연결·읽기 단계별 한도라 합계를 막지 못해 전체 한도를 따로 둔다
 DEADLINE = 8.0
-TIMEOUT = DEADLINE  # 호출 하나의 httpx 단계별 한도. 한도를 넘겨 버린 호출도 이 안에 끝난다
+# 호출 하나의 httpx 단계별 한도 기본값. 검색은 호출마다 남은 시간을 한도로 넘긴다(_within)
+TIMEOUT = DEADLINE
 SLOW_CALL = 2.0  # 초. 이보다 오래 걸린 호출은 단계와 시간을 경고 로그로 남긴다
+# 검색이 연속 BREAKER_FAILURES번 API 실패로 대체되면 BREAKER_COOLDOWN초 동안 Voyage를 부르지 않고
+# 바로 단어 일치 검색으로 간다. 어차피 대체될 검색이 한도까지 기다리지 않게 한다(이슈 #25)
+BREAKER_FAILURES = 3
+BREAKER_COOLDOWN = 30.0
 
 log = logging.getLogger(__name__)
 # 한도를 넘겨 버린 호출이 끝날 때까지 다음 검색을 막지 않도록 일꾼을 여유 있게 둔다
@@ -52,9 +57,16 @@ class SemanticUnavailable(Exception):
     """의미 검색을 쓸 수 없다. 메시지는 결과에 붙이는 대체 이유다."""
 
 
+BAD_RESPONSE = "Voyage API 응답을 해석하지 못했습니다"
+
+
 class Client(Protocol):
-    def embed_query(self, text: str) -> np.ndarray: ...
-    def rerank(self, query: str, documents: list[str]) -> list[float]: ...
+    """timeout: 이번 호출의 httpx 단계별 한도(초). None이면 클라이언트 기본값."""
+
+    def embed_query(self, text: str, timeout: float | None = None) -> np.ndarray: ...
+    def rerank(
+        self, query: str, documents: list[str], timeout: float | None = None
+    ) -> list[float]: ...
 
 
 def entry_text(entry: dict) -> str:
@@ -105,33 +117,47 @@ class VoyageClient:
             transport=transport,
         )
 
-    def _post(self, path: str, body: dict) -> dict:
+    def _post(self, path: str, body: dict, timeout: float | None = None) -> dict:
+        # httpx에서 timeout=None은 한도 없음이라, 주지 않았으면 클라이언트 기본값을 쓴다
+        limit = httpx.USE_CLIENT_DEFAULT if timeout is None else timeout
         try:
-            response = self._http.post(path, json=body)
+            response = self._http.post(path, json=body, timeout=limit)
         except httpx.HTTPError as e:
             reason = f"Voyage API에 연결하지 못했습니다({type(e).__name__})"
             raise SemanticUnavailable(reason) from e
         if response.status_code != 200:
             reason = f"Voyage API가 오류를 돌려줬습니다(HTTP {response.status_code})"
             raise SemanticUnavailable(reason)
-        return response.json()
+        try:
+            return response.json()
+        except ValueError as e:
+            raise SemanticUnavailable(BAD_RESPONSE) from e
 
-    def embed(self, texts: list[str], input_type: str) -> np.ndarray:
+    def embed(self, texts: list[str], input_type: str, timeout: float | None = None) -> np.ndarray:
         """input_type: 검색어는 query, 항목은 document. 길이 1로 맞춘 float32 벡터."""
         data = self._post(
-            "embeddings", {"model": EMBEDDING_MODEL, "input": texts, "input_type": input_type}
+            "embeddings",
+            {"model": EMBEDDING_MODEL, "input": texts, "input_type": input_type},
+            timeout,
         )
-        rows = sorted(data["data"], key=lambda d: d["index"])
-        return normalize(np.asarray([r["embedding"] for r in rows], dtype=np.float32))
+        try:
+            rows = sorted(data["data"], key=lambda d: d["index"])
+            return normalize(np.asarray([r["embedding"] for r in rows], dtype=np.float32))
+        except (KeyError, IndexError, TypeError, ValueError) as e:
+            raise SemanticUnavailable(BAD_RESPONSE) from e
 
-    def embed_query(self, text: str) -> np.ndarray:
-        return self.embed([text], "query")[0]
+    def embed_query(self, text: str, timeout: float | None = None) -> np.ndarray:
+        return self.embed([text], "query", timeout)[0]
 
-    def rerank(self, query: str, documents: list[str]) -> list[float]:
-        data = self._post("rerank", {"model": RERANK_MODEL, "query": query, "documents": documents})
+    def rerank(self, query: str, documents: list[str], timeout: float | None = None) -> list[float]:
+        body = {"model": RERANK_MODEL, "query": query, "documents": documents}
+        data = self._post("rerank", body, timeout)
         scores = [0.0] * len(documents)
-        for r in data["data"]:
-            scores[r["index"]] = r["relevance_score"]
+        try:
+            for r in data["data"]:
+                scores[r["index"]] = r["relevance_score"]
+        except (KeyError, IndexError, TypeError) as e:
+            raise SemanticUnavailable(BAD_RESPONSE) from e
         return scores
 
 
@@ -200,16 +226,82 @@ class Ranked:
     top_score: float  # 1위 리랭커 점수 (결과 없음 판정 근거)
 
 
-def _within(step: str, call: Callable[[], T], deadline: float) -> T:
+class _Breaker:
+    """API 실패가 이어지면 잠시 호출을 막는다(circuit breaker).
+
+    차단 시간이 지나면 검색 하나만 시험 삼아 보내고, 그 결과로 풀거나 다시 막는다.
+    시험 중에 들어온 검색은 막는다. allow()가 돌려준 세대를 결과와 함께 받아, 막기 전에
+    들어온 검색의 늦은 결과는 지금 상태를 바꾸지 않게 한다(막을 때마다 세대가 바뀐다).
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._failures = 0
+        self._open_until = 0.0
+        self._probing = False
+        self._generation = 0
+
+    def allow(self) -> int | None:
+        """허용하면 세대, 막으면 None."""
+        with self._lock:
+            if self._failures < BREAKER_FAILURES:
+                return self._generation
+            if self._probing or time.monotonic() < self._open_until:
+                return None
+            self._probing = True
+            return self._generation
+
+    def succeeded(self, generation: int) -> None:
+        with self._lock:
+            if generation != self._generation:
+                return
+            if self._failures >= BREAKER_FAILURES:
+                log.warning("Voyage API 호출이 다시 성공해 의미 검색을 재개한다")
+            self._failures = 0
+            self._probing = False
+
+    def failed(self, generation: int) -> None:
+        with self._lock:
+            if generation != self._generation:
+                return
+            self._failures += 1
+            self._probing = False
+            if self._failures >= BREAKER_FAILURES:
+                self._open_until = time.monotonic() + BREAKER_COOLDOWN
+                self._generation += 1
+                log.warning(
+                    "Voyage API 호출이 %d번 잇달아 실패해 %.0f초 동안 쓰지 않는다",
+                    self._failures,
+                    BREAKER_COOLDOWN,
+                )
+
+
+_breaker = _Breaker()
+
+
+def _within(step: str, call: Callable[[float], T], deadline: float) -> T:
     """API 호출을 남은 시간 안에서만 기다린다. 넘으면 결과를 버리고 대체 경로로 보낸다.
 
-    DB 조회는 호출한 스레드에 남기고 API 호출만 일꾼 스레드에서 돌린다.
+    DB 조회는 호출한 스레드에 남기고 API 호출만 일꾼 스레드에서 돌린다. call은 httpx 한도로
+    쓸 남은 시간(초)을 받는다.
     """
+
+    def run() -> T:
+        # 실행 중인 호출은 취소할 수 없어, 검색이 포기할 즈음 httpx도 끝나도록 남은 시간을 한도로
+        # 준다(이슈 #25). 줄 선 시간을 빼야 하므로 일꾼에서 시작할 때 잰다
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise SemanticUnavailable("검색 한도가 지나 호출하지 않았습니다")
+        return call(remaining)
+
     start = time.monotonic()
-    future = _executor.submit(call)
+    future = _executor.submit(run)
     try:
         result = future.result(timeout=max(0.0, deadline - start))
     except FutureTimeout as e:
+        # 일꾼을 아직 못 받은 호출은 대기열에서 뺀다. 남겨 두면 끝난 검색을 위해 나중에 실행돼
+        # 뒤이은 검색을 밀어낸다(이슈 #25). 이미 실행 중인 호출은 취소되지 않는다
+        future.cancel()
         log.warning("Voyage %s 호출이 검색 한도 %.0f초를 넘겨 대체했다", step, DEADLINE)
         raise SemanticUnavailable(f"Voyage API 응답이 {DEADLINE:g}초 안에 오지 않았습니다") from e
     elapsed = time.monotonic() - start
@@ -227,8 +319,29 @@ def rank(
     client: Client,
 ) -> Ranked:
     """lexical: 필터를 건 BM25 상위 rowid. allowed: 필터에 맞는 rowid (필터가 없으면 None)."""
+    generation = _breaker.allow()
+    if generation is None:
+        raise SemanticUnavailable("Voyage API 호출이 잇달아 실패해 잠시 쓰지 않습니다")
+    try:
+        ranked = _rank(query, vectors, lexical, allowed, texts_of, client)
+    except Exception:
+        # 예상 밖의 예외도 실패로 세야 시험 중 상태가 남아 계속 막히지 않는다
+        _breaker.failed(generation)
+        raise
+    _breaker.succeeded(generation)
+    return ranked
+
+
+def _rank(
+    query: str,
+    vectors: EntryVectors,
+    lexical: list[int],
+    allowed: set[int] | None,
+    texts_of: Callable[[list[int]], list[str]],
+    client: Client,
+) -> Ranked:
     deadline = time.monotonic() + DEADLINE
-    scores = vectors.matrix @ _within("임베딩", lambda: client.embed_query(query), deadline)
+    scores = vectors.matrix @ _within("임베딩", lambda t: client.embed_query(query, t), deadline)
     order = np.argsort(-scores, kind="stable")
     semantic = []
     for n in order:
@@ -241,7 +354,7 @@ def rank(
     if not candidates:
         return Ranked([], 0.0)
     documents = texts_of(candidates)
-    relevance = _within("리랭커", lambda: client.rerank(query, documents), deadline)
+    relevance = _within("리랭커", lambda t: client.rerank(query, documents, t), deadline)
     ranked = sorted(zip(candidates, relevance, strict=True), key=lambda p: -p[1])
     top = ranked[0][1]
     if top < GATE:
