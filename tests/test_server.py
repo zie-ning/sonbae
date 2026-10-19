@@ -126,6 +126,13 @@ def test_descriptions_ask_to_open_every_cited_case():
     assert "최대 5건" in tools["get_details"].description
 
 
+def test_search_description_matches_instructions():
+    # 호출 시점은 서버 안내와 같은 기준이고, 검색어가 외부 API로 나간다는 점을 알린다 (이슈 #30)
+    description = {t.name: t for t in asyncio.run(server.server.list_tools())}["search"].description
+    assert "구현 중" in description and "시작하기 전에 호출" not in description
+    assert "외부 검색 API" in description
+
+
 def test_prompt():
     result = asyncio.run(server.server.get_prompt("sonbae", {"topic": "선착순 쿠폰"}))
     text = result.messages[0].content.text
