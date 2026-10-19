@@ -132,11 +132,20 @@ def test_prompt():
     assert "선착순 쿠폰" in text and "get_details" in text
 
 
+def test_instructions_guide_call_decision():
+    # 지연 로드에서는 도구 이름과 서버 안내만 보고 부를지 정한다. Claude Code는 4,096자에서 자른다
+    text = server.INSTRUCTIONS
+    assert len(text) <= 4096
+    assert "search" in text and "구현 중에" in text
+    assert "부르지 않는다" in text
+
+
 def test_reference_principle_is_communicated():
-    # 사례는 참고 자료라는 원칙이 서버 안내·search 설명·결과·prompt에 모두 들어 있어야 한다
+    # 사례는 참고 자료라는 원칙이 search 설명·결과·prompt에 들어 있어야 한다.
+    # 서버 안내는 호출 판단용이라 넣지 않는다 (이슈 #30)
     from sonbae import render
 
-    assert render.REFERENCE_PRINCIPLE in server.INSTRUCTIONS
+    assert render.REFERENCE_PRINCIPLE not in server.INSTRUCTIONS
     tools = {t.name: t for t in asyncio.run(server.server.list_tools())}
     assert render.REFERENCE_PRINCIPLE in tools["search"].description
     assert "설계 판단의 근거로" not in tools["get_details"].description
