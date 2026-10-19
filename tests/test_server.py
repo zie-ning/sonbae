@@ -148,8 +148,8 @@ def test_instructions_guide_call_decision():
 
 
 def test_reference_principle_is_communicated():
-    # 사례는 참고 자료라는 원칙이 search 설명·결과·prompt에 들어 있어야 한다.
-    # 서버 안내는 호출 판단용이라 넣지 않는다 (이슈 #30)
+    # 사례는 참고 자료라는 원칙이 search 설명·prompt에 들어 있어야 한다.
+    # 서버 안내는 호출 판단용이라, 결과는 상태에 따른 안내만 담아 넣지 않는다 (이슈 #30)
     from sonbae import render
 
     assert render.REFERENCE_PRINCIPLE not in server.INSTRUCTIONS
@@ -157,8 +157,9 @@ def test_reference_principle_is_communicated():
     assert render.REFERENCE_PRINCIPLE in tools["search"].description
     assert "설계 판단의 근거로" not in tools["get_details"].description
 
-    assert render.REFERENCE_RULE in call("search", query="선착순 쿠폰")
-    assert render.REFERENCE_RULE in call("get_details", ids=["case_0001"])
+    for text in (call("search", query="선착순 쿠폰"), call("get_details", ids=["case_0001"])):
+        assert "원문 링크를 함께 밝히고" not in text
+        assert "자신의 제안과 구분" not in text
 
     prompt = asyncio.run(server.server.get_prompt("sonbae", {"topic": "쿠폰"}))
     text = prompt.messages[0].content.text
