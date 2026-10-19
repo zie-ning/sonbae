@@ -47,8 +47,9 @@ LOCAL_HOSTS = ("127.0.0.1", "localhost", "::1")
 MCP_PATH = "/mcp"
 HEALTH_PATH = "/health"
 MAX_REQUEST_ID_BYTES = 64
-# 에이전트 한 명의 검색(한 번에 2~5개, 분당 수십 회 이하)은 넉넉히 통과하고, 최악의 Voyage 비용은
-# 검색당 약 $0.0015 × 분당 60회 = 시간당 약 $5.4로 묶인다
+# 에이전트 한 명의 검색(한 번에 2~5개, 분당 수십 회 이하)은 넉넉히 통과하고, 최악의 Voyage 사용량은
+# 검색당 리랭커 약 21.7k 토큰 × 분당 60회 ≈ 1.3M TPM으로 등급 1 한도(rerank-3 2M TPM) 안이다.
+# 무료 토큰을 다 쓴 뒤라면 비용은 검색당 약 $0.0011, 시간당 약 $3.9로 묶인다
 DEFAULT_RATE_PER_MINUTE = 60
 DEFAULT_BURST = 20
 
