@@ -78,7 +78,8 @@ jobs:
         env:
           APP: ${{ steps.previous.outputs.app }}
           SONBAE_TOKEN: ${{ secrets.SONBAE_TOKEN }}
-        # search는 Voyage 토큰을 써서 부르지 않고, DB만 읽는 get_details로 도구 호출까지 확인한다
+        # search는 Voyage 토큰을 써서 부르지 않는다. DB만 읽는 aggregate에서 지금 있는 항목 ID를 하나 받아
+        # (항목 ID는 데이터 갱신으로 바뀔 수 있다) get_details로 그 상세가 실제로 오는지 본다
         run: |
           base="https://$APP.fly.dev"
           for i in $(seq 1 24); do
@@ -87,13 +88,26 @@ jobs:
             sleep 5
           done
           if [ "$code" != "200" ]; then echo "::error::/health가 200이 아닙니다($code)"; exit 1; fi
-          response=$(curl -sS --fail-with-body --connect-timeout 5 --max-time 30 -X POST "$base/mcp"             -H "Authorization: Bearer $SONBAE_TOKEN"             -H "Content-Type: application/json"             -H "Accept: application/json, text/event-stream"             -H "MCP-Protocol-Version: 2025-06-18"             -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_details","arguments":{"ids":["case_0001"]}}}')
-          # 없는 ID도 오류가 아닌 안내 문구로 돌아오므로, 요청한 항목의 상세가 실제로 왔는지 본다
-          if ! echo "$response" | jq -e '.result.isError != true and (.result.content[0].text | contains("[case_0001]"))' > /dev/null; then
-            echo "::error::get_details가 case_0001의 상세를 돌려주지 않았습니다"
+          call() {
+            jq -nc --arg name "$1" --argjson args "$2" \
+              '{jsonrpc: "2.0", id: 1, method: "tools/call", params: {name: $name, arguments: $args}}' |
+              curl -sS --fail-with-body --connect-timeout 5 --max-time 30 -X POST "$base/mcp" \
+                -H "Authorization: Bearer $SONBAE_TOKEN" \
+                -H "Content-Type: application/json" \
+                -H "Accept: application/json, text/event-stream" \
+                -H "MCP-Protocol-Version: 2025-06-18" \
+                --data-binary @-
+          }
+          id=$(call aggregate '{"group_by": "company", "top_n": 1}' | jq -r '.result.content[0].text // ""' |
+            grep -oE 'case_[0-9]+' | head -n 1 || true)
+          if [ -z "$id" ]; then echo "::error::aggregate 결과에서 항목 ID를 찾지 못했습니다"; exit 1; fi
+          # 없는 ID도 오류가 아닌 안내 문구로 돌아오므로, 요청한 항목의 상세 머리글이 실제로 왔는지 본다
+          if ! call get_details "{\"ids\": [\"$id\"]}" |
+            jq -e --arg head "[$id]" '.result.isError != true and (.result.content[0].text | contains($head))' > /dev/null; then
+            echo "::error::get_details가 $id의 상세를 돌려주지 않았습니다"
             exit 1
           fi
-          echo "확인 완료: /health 200, get_details 정상"
+          echo "확인 완료: /health 200, aggregate·get_details 정상 ($id)"
 
       - name: 직전 배포로 되돌리기
         id: rollback
