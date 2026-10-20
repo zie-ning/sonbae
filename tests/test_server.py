@@ -78,9 +78,12 @@ def test_search_rejects_invalid_enum():
 def test_get_details_format():
     text = call("get_details", ids=["case_0001", "case_0404"])
     assert "[case_0001] 선착순 쿠폰 발급 개선기" in text
+    assert "원문: " in text  # 근거 발췌를 빼는 대신 원문 링크로 확인한다
     assert "## 해결 방법" in text
-    assert '근거: "Redis 원자 연산으로 발급 수량 관리"' in text
     assert "## 버린 대안\n- DB 비관적 락 (설계 방식): 처리량 부족" in text
+    # 근거 발췌와 카드에 이미 있는 분류·기술, 태그는 넣지 않는다 (이슈 #36)
+    for omitted in ("근거:", "문제 유형:", "기술:", "태그:"):
+        assert omitted not in text
     assert "같은 글의 다른 항목: case_0002" in text
     assert "없는 ID: case_0404" in text
 
