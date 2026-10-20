@@ -58,3 +58,17 @@ uv run python eval/agent_call_report.py                                         
 - **서버 버전**: `before`(이슈 #30 변경 전, `0046dbf`)와 `after`(변경 후)를 `git archive`로 꺼내 `servers/`에 따로 설치한다. 두 버전 모두 같은 DB를 쓰고, 기본 동작(도구 정의 지연 로드)이다. 서버 이름은 사용자가 README대로 등록하는 `sonbae`다(M7은 `techblog`)
 - **E2 예제 저장소**: 주문·상품·결제 API가 있는 작은 Python 프로젝트다. 과제 n02용으로 주문 금액에 수량을 곱하지 않는 버그를 일부러 두었다
 - **지표**: 호출률(불러야 함), 잘못 부른 비율(부르면 안 됨), 늦은 호출(코드를 고친 뒤에야 처음 부름), 처음 부르기 전 도구 수, 미끼·웹 호출, 대체 검색 수(0이어야 의미 검색 조건)
+
+## 응답 형식 평가 (이슈 #36)
+
+`get_details` 응답을 줄인 서버가 인용 정확도와 답변 품질을 떨어뜨리지 않는지 본다. 환경은 M7 mcp 조건과 같다(빈 폴더, 서버 이름 `techblog`, 첫 턴에 설계 질문). 과제는 M7 중 `search`·`get_details`를 쓰는 32개(design·open·absent·noise·few)다.
+
+```bash
+uv run python eval/agent_format_run.py --dry-run --env-file <VOYAGE_API_KEY가 든 .env>   # 실행 계획과 Voyage 토큰 예상
+uv run python eval/agent_format_run.py --env-file <.env>                                 # 실행
+uv run python eval/agent_format_eval.py --env-file <OPENAI_API_KEY가 든 .env> --report   # 판정 → eval/reports/issue36-format.md
+```
+
+- **서버 버전**: `before`(변경 전, `af1553b`)는 `git archive`로 꺼내고, `after`는 기본으로 작업 폴더의 코드를 복사해 설치한다(`--after-rev`로 커밋 지정 가능)
+- **지표**: ① 링크로 인용한 글 중 `get_details`로 연 항목이 없는 글 ② 도구 결과에 없는 블로그 글 링크 ③ 사례 서술 충실도(gpt-5.5가 그 실행의 도구 결과에 나온 모든 항목의 요약 + 발췌와 대조) ④ after·before 답변 쌍 판정(M7 판정기, 두 순서) ⑤ 실행당 sonbae 결과 글자 수
+- 리포트를 다시 생성해도 `## 해석` 아래 사람이 쓴 부분은 남는다
