@@ -42,6 +42,8 @@ uv run sonbae-http                                                             #
 
 CI(`.github/workflows/ci.yml`)는 Python 3.11과 3.14에서 `uv sync --locked` → ruff check → ruff format --check → pytest를 실행한다. 의존성을 바꾸면 `uv.lock`도 커밋해야 한다.
 
+원격 배포(`.github/workflows/deploy.yml`)는 main에 서버 코드(`src/`, `Dockerfile`, `fly.toml`, `pyproject.toml`, `uv.lock`, `db_release.json` 제외)가 바뀌면 CI를 재사용해 검사한 뒤 Fly.io에 배포하고, `/health`·`get_details`로 확인해 실패하면 직전 이미지로 되돌리고 `deploy` 라벨 이슈를 남긴다. 저장소 시크릿은 `FLY_API_TOKEN`(배포 토큰), `SONBAE_TOKEN`이다. 로컬에서 `fly deploy`하지 않는다(배포본이 main과 어긋난다).
+
 자동 갱신(`.github/workflows/update.yml`)은 매주 월요일 main에서 `pipeline.update --skip woowahan` → 린트·테스트 → Release 배포 → 데이터 PR 생성·병합을 하고, 문제가 있으면 `auto-update` 라벨 이슈를 남긴다. 저장소 시크릿은 `OPENAI_API_KEY`, `VOYAGE_API_KEY`(항목 임베딩, M10)이고, 임베딩이 실패해도 빌드는 하고 일부 실패(종료 코드 2)로 알린다. 봇이 만든 PR에서는 CI가 돌지 않으므로 검사는 이 워크플로 안에서 한다. 우아한형제들은 GitHub Actions IP를 403으로 막아 워크플로에서 빠지므로, 로컬에서 `pipeline.update woowahan` → `pipeline.release_db --upload` → 데이터·`db_release.json`을 브랜치·PR로 반영한다.
 
 ## 아키텍처

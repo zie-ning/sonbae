@@ -3,6 +3,7 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_call: # 배포 워크플로가 배포 전에 같은 검사를 부른다 (deploy.yml)
 
 jobs:
   test:
