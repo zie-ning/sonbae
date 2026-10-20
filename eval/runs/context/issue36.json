@@ -1,0 +1,343 @@
+{
+  "definitions": {
+    "instructions": 495,
+    "tools": {
+      "search": {
+        "description": 1099,
+        "schema": 1156
+      },
+      "get_details": {
+        "description": 290,
+        "schema": 208
+      },
+      "aggregate": {
+        "description": 540,
+        "schema": 1335
+      }
+    }
+  },
+  "search_chars": {
+    "n": 62,
+    "median": 3514.5,
+    "mean": 2929.2,
+    "max": 5262,
+    "total": 181612
+  },
+  "search_results": {
+    "n": 62,
+    "median": 7.5,
+    "mean": 6,
+    "max": 10,
+    "total": 372
+  },
+  "details_chars": {
+    "n": 53,
+    "median": 4285,
+    "mean": 3909.9,
+    "max": 6465,
+    "total": 207223
+  },
+  "per_query": {
+    "m01": {
+      "search": 2789,
+      "results": 6,
+      "details": 4785
+    },
+    "m02": {
+      "search": 1116,
+      "results": 2,
+      "details": 2192
+    },
+    "m03": {
+      "search": 695,
+      "results": 1,
+      "details": 934
+    },
+    "m04": {
+      "search": 5016,
+      "results": 10,
+      "details": 6026
+    },
+    "m05": {
+      "search": 1795,
+      "results": 4,
+      "details": 3484
+    },
+    "m06": {
+      "search": 1541,
+      "results": 3,
+      "details": 2825
+    },
+    "m07": {
+      "search": 4719,
+      "results": 10,
+      "details": 4321
+    },
+    "m08": {
+      "search": 5262,
+      "results": 10,
+      "details": 6465
+    },
+    "m09": {
+      "search": 2032,
+      "results": 4,
+      "details": 4170
+    },
+    "m10": {
+      "search": 752,
+      "results": 1,
+      "details": 1175
+    },
+    "d01": {
+      "search": 4654,
+      "results": 10,
+      "details": 4807
+    },
+    "d02": {
+      "search": 4635,
+      "results": 10,
+      "details": 3541
+    },
+    "d03": {
+      "search": 3608,
+      "results": 8,
+      "details": 4876
+    },
+    "d04": {
+      "search": 4819,
+      "results": 10,
+      "details": 4574
+    },
+    "d05": {
+      "search": 4836,
+      "results": 10,
+      "details": 4211
+    },
+    "d06": {
+      "search": 4482,
+      "results": 10,
+      "details": 4285
+    },
+    "d07": {
+      "search": 4848,
+      "results": 10,
+      "details": 4664
+    },
+    "d08": {
+      "search": 4966,
+      "results": 9,
+      "details": 5071
+    },
+    "d09": {
+      "search": 2264,
+      "results": 4,
+      "details": 3906
+    },
+    "d10": {
+      "search": 4605,
+      "results": 9,
+      "details": 4974
+    },
+    "d11": {
+      "search": 4395,
+      "results": 10,
+      "details": 4027
+    },
+    "d12": {
+      "search": 4666,
+      "results": 10,
+      "details": 5776
+    },
+    "d13": {
+      "search": 4676,
+      "results": 10,
+      "details": 4331
+    },
+    "d14": {
+      "search": 4595,
+      "results": 10,
+      "details": 5201
+    },
+    "d15": {
+      "search": 5237,
+      "results": 10,
+      "details": 5092
+    },
+    "a01": {
+      "search": 300,
+      "results": 0
+    },
+    "a02": {
+      "search": 307,
+      "results": 0
+    },
+    "a03": {
+      "search": 303,
+      "results": 0
+    },
+    "a04": {
+      "search": 302,
+      "results": 0
+    },
+    "a05": {
+      "search": 307,
+      "results": 0
+    },
+    "p01": {
+      "search": 5097,
+      "results": 10,
+      "details": 4783
+    },
+    "p02": {
+      "search": 4753,
+      "results": 10,
+      "details": 5433
+    },
+    "p03": {
+      "search": 4532,
+      "results": 10,
+      "details": 4639
+    },
+    "p04": {
+      "search": 2136,
+      "results": 5,
+      "details": 4010
+    },
+    "p05": {
+      "search": 530,
+      "results": 1,
+      "details": 813
+    },
+    "p06": {
+      "search": 574,
+      "results": 1,
+      "details": 655
+    },
+    "p07": {
+      "search": 1682,
+      "results": 4,
+      "details": 2809
+    },
+    "p08": {
+      "search": 4071,
+      "results": 10,
+      "details": 4522
+    },
+    "p09": {
+      "search": 626,
+      "results": 1,
+      "details": 846
+    },
+    "p10": {
+      "search": 5059,
+      "results": 10,
+      "details": 6043
+    },
+    "p11": {
+      "search": 3866,
+      "results": 8,
+      "details": 4349
+    },
+    "p12": {
+      "search": 576,
+      "results": 1,
+      "details": 741
+    },
+    "p13": {
+      "search": 4438,
+      "results": 10,
+      "details": 4087
+    },
+    "p14": {
+      "search": 4622,
+      "results": 10,
+      "details": 4142
+    },
+    "p15": {
+      "search": 4513,
+      "results": 10,
+      "details": 4277
+    },
+    "p16": {
+      "search": 2056,
+      "results": 4,
+      "details": 4077
+    },
+    "s01": {
+      "search": 4899,
+      "results": 10,
+      "details": 4688
+    },
+    "s02": {
+      "search": 4751,
+      "results": 10,
+      "details": 4349
+    },
+    "s03": {
+      "search": 4751,
+      "results": 10,
+      "details": 5532
+    },
+    "s04": {
+      "search": 4133,
+      "results": 10,
+      "details": 4026
+    },
+    "n01": {
+      "search": 299,
+      "results": 0
+    },
+    "n02": {
+      "search": 798,
+      "results": 1,
+      "details": 1293
+    },
+    "n03": {
+      "search": 5153,
+      "results": 10,
+      "details": 6027
+    },
+    "n04": {
+      "search": 3224,
+      "results": 7,
+      "details": 4768
+    },
+    "n05": {
+      "search": 617,
+      "results": 1,
+      "details": 743
+    },
+    "n06": {
+      "search": 2213,
+      "results": 5,
+      "details": 4233
+    },
+    "n07": {
+      "search": 301,
+      "results": 0
+    },
+    "n09": {
+      "search": 1741,
+      "results": 3,
+      "details": 3000
+    },
+    "n10": {
+      "search": 304,
+      "results": 0
+    },
+    "n11": {
+      "search": 1060,
+      "results": 2,
+      "details": 1571
+    },
+    "n13": {
+      "search": 294,
+      "results": 0
+    },
+    "n14": {
+      "search": 3421,
+      "results": 7,
+      "details": 5054
+    }
+  }
+}

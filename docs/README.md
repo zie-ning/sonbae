@@ -2,7 +2,7 @@
 
 프로젝트의 모든 문서와 마일스톤 현황을 한곳에서 관리한다. 작업을 시작할 때 이 문서의 "지금 할 일"부터 본다.
 
-> 최종 갱신: 2026-10-19
+> 최종 갱신: 2026-10-20
 
 ## 지금 할 일
 
@@ -11,6 +11,7 @@
 - **완료**: [M9. 원격 HTTP 서버](milestones/M9.md). 같은 도구를 Streamable HTTP로 열어 Fly.io에 배포했다(포트폴리오용, README에 주소 미노출). 미룬 것: Prometheus 지표, Voyage 호출 병목 [이슈 #25](https://github.com/zie-ning/sonbae/issues/25)
 - **운영**: 우아한형제들은 자동 갱신에서 빠지므로 로컬에서 주기적으로 갱신 (`pipeline.update woowahan` → `release_db --upload` → PR, [기획.md](기획.md#자동-갱신-m8)). 자동 갱신은 저장소 시크릿 `OPENAI_API_KEY`, `VOYAGE_API_KEY`를 쓴다(M10, 등록됨)
 - **호출 판단 개선** [이슈 #30](https://github.com/zie-ning/sonbae/issues/30): 서버 안내를 호출 판단용으로 바꾸고 결과 끝 안내를 뺐다. 다른 도구와 경쟁·작업 도중 조건 호출률 평가에서 작업 도중 호출률 9/18 → 15/18, 잘못 부른 경우 0. `alwaysLoad`와 README 지시문 스니펫은 쓰지 않음 ([M7.md 후속](milestones/M7.md#후속-호출-판단-개선-2026-10-19-이슈-30))
+- **응답 줄이기** [이슈 #36](https://github.com/zie-ning/sonbae/issues/36): `get_details` 응답에서 근거 발췌와 분류·기술·태그를 뺐다(상위 5건 응답 −54.7%, 에이전트 평가에서 실행당 sonbae 결과 −25%). 인용 정확도·사례 서술 충실도·답변 품질은 미리 정한 기준을 통과. 원문 링크와 `search` 카드는 그대로 둠 ([M7.md 후속](milestones/M7.md#후속-get_details-응답-줄이기-2026-10-20-이슈-36))
 - **미결정**: M7 결과로 드러난 사례 소개 방식 개선 ([기획.md](기획.md#미결정-사항)). M6에서 넘어온 검색 잡음 항목은 영향이 작아 고치지 않기로 함 ([M7.md](milestones/M7.md#m6-검색-잡음-항목-분석-2026-10-07))
 
 ## 마일스톤 현황

@@ -1,0 +1,11 @@
+{
+  "claude_code_version": "2.1.296 (Claude Code)",
+  "model": "sonnet",
+  "reps": 3,
+  "servers": {
+    "before": "af1553b398230395a5fb163b02298cc6fec25abb",
+    "after": "worktree:32ae587a15b84f8c"
+  },
+  "runner_commit": "af1553b398230395a5fb163b02298cc6fec25abb",
+  "db_sha256": "6b5d897cbe2287a6bc2c8222c59c28e715ee98e3d8c665aa2551252d8548b01d"
+}

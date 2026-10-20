@@ -112,26 +112,19 @@ def search_result(query: str, filters: Filters, result: SearchResult, notes: lis
 def _points(title: str, points: list[dict]) -> list[str]:
     if not points:
         return []
-    lines = ["", f"## {title}"]
-    for p in points:
-        lines.append(f"- {p['text']}")
-        lines.append(f'  근거: "{p["evidence"]}"')
-    return lines
+    return ["", f"## {title}", *(f"- {p['text']}" for p in points)]
 
 
 def detail(d: Detail) -> str:
+    # 근거 발췌는 응답에 넣지 않는다. 받은 발췌의 98%가 답변에 쓰이지 않았고, 발췌로는 요약을
+    # 검증할 수 없어 확인은 원문 링크로 한다. 발췌는 추출 검증·색인에만 쓴다. 분류·기술은
+    # search 카드에서 이미 봤고 태그는 답변에 쓰이지 않아 뺀다 (이슈 #36)
     e = d.entry
     lines = [
         f"[{e['id']}] {e['post_title']}",
         f"회사: {e['company']} · 발행일: {e['published_at']}",
         f"원문: {e['post_url']}",
-        f"문제 유형: {', '.join(e['problem_types'])} · 도메인: {', '.join(e['domains'])}",
     ]
-    if e["technologies"]:
-        lines.append(f"기술: {', '.join(e['technologies'])}")
-    if e["tags"]:
-        lines.append(f"태그: {', '.join(e['tags'])}")
-
     lines += _points("문제 상황", e["problem_situation"])
     lines += _points("해결 방법", e["solution"])
     lines += _points("성능·운영 포인트", e["performance_ops"])
@@ -140,7 +133,6 @@ def detail(d: Detail) -> str:
         for r in e["rejected_alternatives"]:
             kind = " (설계 방식)" if r.get("kind") == "설계 방식" else ""
             lines.append(f"- {r['name']}{kind}: {r['reason']}")
-            lines.append(f'  근거: "{r["evidence"]}"')
 
     if d.siblings:
         lines += ["", f"같은 글의 다른 항목: {', '.join(d.siblings)}"]
